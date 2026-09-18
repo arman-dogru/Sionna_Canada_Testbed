@@ -38,3 +38,13 @@ data/browser-profile-*/
 
 # Chrome debugging/runtime files
 .chrome-debug*
+
+# Local disposable caches
+.cache/
+
+# Legacy/local tool artifacts
+.pytest_cache/
+.pytest-tmp*/
+.pytest_tmp*/
+.ruff_cache/
+.chrome-debug*/

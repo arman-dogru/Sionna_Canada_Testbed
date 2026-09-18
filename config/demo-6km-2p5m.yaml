@@ -1,0 +1,70 @@
+﻿project:
+  name: ottawa-legget-drive
+  model_version: demo-multiband-v4-6km-2p5m
+
+paths:
+  data_root: data
+
+anchor:
+  address: "350 Legget Drive, Kanata, Ontario, K2K 2W7, Canada"
+  latitude: 45.340455200216
+  longitude: -75.91114196736
+
+area:
+  min_width_m: 6000
+  max_width_m: 6000
+  step_width_m: 6000
+  context_m: 750
+  tile_size_m: 500
+  overlap_m: 50
+  cell_size_m: 2.5
+
+compute:
+  total_budget_hours: 12
+  preparation_reserve_hours: 1.5
+  max_vram_fraction: 0.90
+  local_gpu_count: 2
+  deterministic_seed: 41
+
+receiver:
+  default_height_agl_m: 1.5
+  noise_figure_db: 7.0
+  temperature_k: 290.0
+
+simulation:
+  max_depth: 4
+  samples_per_tx: 1000000
+  los: true
+  specular_reflection: true
+  diffuse_reflection: false
+  refraction: true
+  diffraction: true
+  edge_diffraction: false
+  min_free_space_rx_dbm: -140.0
+  service_threshold_rsrp_dbm: -110.0
+
+antenna_defaults:
+  tx_power_dbm: 43.0
+  front_to_back_db: 30.0
+  height_agl_m: 25.0
+  horizontal_beamwidth_deg: 65.0
+  vertical_beamwidth_deg: 10.0
+  gain_dbi: 15.0
+  line_loss_db: 2.0
+  downtilt_deg: 4.0
+
+sources:
+  ised_download_page: "https://ised-isde.canada.ca/site/spectrum-management-system/en/spectrum-management-system-data/download-sms-data"
+  ised_terrestrial_zip: "https://www.ic.gc.ca/engineering/SMS_TAFL_Files/Site_Data_Extract_FX.zip"
+  ised_field_descriptions: "https://ised-isde.canada.ca/site/spectrum-management-system/sites/default/files/documents/Field%20Descriptions%20-%20Descriptions%20des%20champs_0.pdf"
+  ottawa_lod1_index: "https://services.arcgis.com/G6F8XLCl5KtAlZ2G/arcgis/rest/services/3D_Buildings_LOD1/FeatureServer/0"
+  hrdem_stac_search: "https://datacube.services.geo.ca/stac/api/search"
+
+materials:
+  ground: {itu_type: medium_dry_ground, thickness_m: 0.5, scattering_coefficient: 0.05}
+  concrete: {itu_type: concrete, thickness_m: 0.2, scattering_coefficient: 0.10}
+  glass: {itu_type: glass, thickness_m: 0.02, scattering_coefficient: 0.02}
+  metal: {itu_type: metal, thickness_m: 0.01, scattering_coefficient: 0.15}
+  vegetation: {itu_type: wood, thickness_m: 0.3, scattering_coefficient: 0.30}
+  water: {itu_type: wet_ground, thickness_m: 1.0, scattering_coefficient: 0.02}
+

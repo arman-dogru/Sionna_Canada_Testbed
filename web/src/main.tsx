@@ -2,7 +2,7 @@ import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import DeckGL from '@deck.gl/react';
 import {BitmapLayer, GeoJsonLayer, ScatterplotLayer} from '@deck.gl/layers';
-import Map, {MapLayerMouseEvent, MapRef} from 'react-map-gl/maplibre';
+import Map, {MapRef} from 'react-map-gl/maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import CesiumGlobe, {CesiumContentMode} from './CesiumGlobe';
 import {coverageCanvas, CoverageMetric, CoverageTile, metricRgba} from './coverage';
@@ -168,7 +168,8 @@ function App() {
       height_agl_m: String(height), limit: '12'
     });
     if (operator) params.set('operator', operator);
-    if (frequency) params.set('frequency_mhz', frequency);
+    const queryFrequency = frequency || coverageFrequency;
+    if (queryFrequency) params.set('frequency_mhz', queryFrequency);
     if (selectedRun) params.set('run_id', selectedRun);
     try {
       const response = await fetch(`${apiBase}/v1/query?${params}`);
@@ -210,6 +211,7 @@ function App() {
         const coordinates = info.object.geometry.coordinates;
         const next = {longitude: coordinates[0], latitude: coordinates[1]};
         setSelectedMeasurement(info.object.properties); setPoint(next); runQuery(next);
+        return true;
       }
     }),
     new GeoJsonLayer({
@@ -223,8 +225,10 @@ function App() {
     })
   ];
 
-  function onMapClick(event: MapLayerMouseEvent) {
-    const next = {longitude: event.lngLat.lng, latitude: event.lngLat.lat};
+  function onDeckClick(info: {coordinate?: number[]}) {
+    if (!info.coordinate || info.coordinate.length < 2) return;
+    const next = {longitude: info.coordinate[0], latitude: info.coordinate[1]};
+    setSelectedMeasurement(null);
     setPoint(next); runQuery(next);
   }
 
@@ -249,12 +253,11 @@ function App() {
           initialViewState={{
             ...anchor, zoom: initialZoom, pitch: initialPitch, bearing: initialBearing
           }}
-          controller={true} layers={layers}
+          controller={true} layers={layers} onClick={onDeckClick}
         >
           <Map
             ref={mapRef}
             mapStyle="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
-            onClick={onMapClick}
           />
         </DeckGL>}
       {!captureMapOnly && <div className="view-switch" role="group" aria-label="Map view">
