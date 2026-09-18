@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling==1.32.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ottawa-sionna-rt"
+version = "0.1.0"
+description = "Reproducible Ottawa cellular digital twin built on Sionna RT"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = {text = "Apache-2.0"}
+authors = [{name = "Ottawa RT contributors"}]
+dependencies = [
+  "fastapi==0.141.1",
+  "httpx==0.28.1",
+  "matplotlib==3.11.2",
+  "numpy==2.5.3",
+  "pandas==3.0.5",
+  "pydantic==2.13.5",
+  "pyyaml==6.0.3",
+  "typer==0.27.2",
+  "uvicorn[standard]==0.53.0",
+]
+
+[project.optional-dependencies]
+geo = [
+  "fiona==1.10.1",
+  "geopandas==1.1.4",
+  "pyogrio==0.13.0",
+  "pyproj==3.8.0",
+  "rasterio==1.5.1",
+  "shapely==2.1.2",
+  "trimesh==4.12.2",
+]
+rt = ["sionna-rt==2.1.0"]
+calibration = ["scipy==1.18.1", "scikit-learn==1.9.1"]
+dev = ["pytest==8.4.2", "pytest-cov==6.3.0", "ruff==0.16.8"]
+all = [
+  "fiona==1.10.1", "geopandas==1.1.4", "pyogrio==0.13.0", "pyproj==3.8.0",
+  "rasterio==1.5.1", "shapely==2.1.2", "trimesh==4.12.2",
+  "sionna-rt==2.1.0", "scipy==1.18.1", "scikit-learn==1.9.1",
+]
+
+[project.scripts]
+ottawa-rt = "ottawa_rt.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ottawa_rt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

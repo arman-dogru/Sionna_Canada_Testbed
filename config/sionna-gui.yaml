@@ -1,0 +1,14 @@
+scene: data/scenes/legget-2000m/scene.xml
+radio_map:
+  cell_size: [5.0, 5.0]
+  max_depth: 5
+  los: true
+  specular_reflection: true
+  diffuse_reflection: false
+  refraction: true
+  diffraction: true
+paths:
+  max_depth: 5
+  samples_per_src: 1000000
+  synthetic_array: true
+

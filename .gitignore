@@ -1,0 +1,40 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+# Python tooling / tests
+.pytest_cache/
+.pytest_tmp*/
+.pytest*
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Python builds
+dist/
+build/
+*.egg-info/
+
+# Node / frontend
+node_modules/
+web/dist/
+web/.env.local
+web/.env.*.local
+*.tsbuildinfo
+
+# Project data
+data/raw/
+data/processed/
+data/scenes/
+data/runs/
+data/measurements/
+data/calibration/
+
+# Generated Chrome/Chromium browser profiles
+data/browser-profile-*/
+
+# Keep data directory in Git
+!data/.gitkeep
+
+# Chrome debugging/runtime files
+.chrome-debug*
