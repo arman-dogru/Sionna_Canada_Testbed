@@ -1,20 +1,67 @@
 from __future__ import annotations
 
 import json
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
+from uuid import uuid4
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from PIL import Image
 
 from ottawa_rt.config import Settings, load_settings
 from ottawa_rt.data.ised import load_sectors
 from ottawa_rt.models import ReceiverMeasurement, ServicePrediction
 from ottawa_rt.query import PredictionStore
+
+COVERAGE_RENDER_VERSION = 2
+COVERAGE_RANGES = {
+    "path_gain": (-190.0, -70.0),
+    "rss": (-145.0, -35.0),
+    "rsrp": (-145.0, -45.0),
+    "sinr": (-20.0, 70.0),
+}
+COVERAGE_COLORS = np.asarray(
+    [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]],
+    dtype=np.float32,
+)
+
+
+def _write_coverage_png(path: Path, values: np.ndarray, metric: str) -> None:
+    """Atomically render a browser-ready coverage raster using the GUI palette."""
+    minimum, maximum = COVERAGE_RANGES[metric]
+    valid = np.isfinite(values) & (values > -199.0)
+    normalized = np.clip((values - minimum) / (maximum - minimum), 0.0, 1.0)
+    normalized = np.where(valid, normalized, 0.0)
+    scaled = normalized * (len(COVERAGE_COLORS) - 1)
+    lower = np.floor(scaled).astype(np.intp)
+    upper = np.minimum(lower + 1, len(COVERAGE_COLORS) - 1)
+    blend = (scaled - lower)[..., np.newaxis]
+    rgb = np.floor(
+        COVERAGE_COLORS[lower] + (COVERAGE_COLORS[upper] - COVERAGE_COLORS[lower]) * blend
+        + 0.5
+    ).astype(np.uint8)
+    # Weak finite predictions should not black out the photogrammetry. Increase
+    # opacity with signal strength while keeping no-data pixels fully clear.
+    alpha = np.where(valid, np.floor(64.0 + normalized * 156.0 + 0.5), 0.0)
+    alpha = alpha.astype(np.uint8)[..., np.newaxis]
+    rgba = np.concatenate((rgb, alpha), axis=2)
+    # The simulation grid is south-up; browser images are north-up.
+    rgba = np.flipud(rgba)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}-{uuid4().hex}.tmp")
+    try:
+        Image.fromarray(rgba, mode="RGBA").save(temporary, format="PNG", compress_level=6)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 @lru_cache(maxsize=1)
@@ -38,6 +85,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["GET"],
         allow_headers=["*"],
     )
+    app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
     store = PredictionStore(selected)
 
     @app.get("/health")
@@ -126,6 +174,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             payload["coverage_tiles"] = sorted(
                 item.name for item in (path.parent / "tiles").glob("*.npz")
             )
+            payload["stitched_coverage"] = sorted(
+                item.name for item in (path.parent / "stitched").glob("*MHz.npz")
+            )
+            payload["has_combined_coverage"] = (
+                path.parent / "stitched" / "all-bands.npz"
+            ).exists()
             result.append(payload)
         return result
 
@@ -190,15 +244,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "source": selected.portable_path(source),
         }
 
-    @app.get("/v1/coverage/{run_id}/{tile_name}")
+    @app.get("/v1/coverage/{run_id}/{tile_name}", response_model=None)
     def coverage_tile(
         run_id: str,
         tile_name: str,
         stride: int = Query(default=4, ge=1, le=50),
         metric: Literal["path_gain", "rss", "rsrp", "sinr"] = "rsrp",
-    ) -> dict[str, object]:
+        format: Literal["json", "metadata", "png"] = "json",
+        source: Literal["tiles", "stitched"] = "tiles",
+    ) -> dict[str, object] | FileResponse | JSONResponse:
+        safe_run_id = Path(run_id).name
+        if safe_run_id != run_id:
+            raise HTTPException(status_code=404, detail="Coverage run not found")
         safe_name = Path(tile_name).name
-        path = selected.paths.runs / run_id / "tiles" / safe_name
+        combined = safe_name == "all-bands.npz"
+        stitched = combined or source == "stitched"
+        layer_dir = "stitched" if stitched else "tiles"
+        path = selected.paths.runs / safe_run_id / layer_dir / safe_name
         if path.suffix != ".npz" or not path.exists():
             raise HTTPException(status_code=404, detail="Coverage tile not found")
         metric_fields = {
@@ -214,66 +276,129 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else:
                 source = np.asarray(data[source_field])
                 strongest = np.max(np.where(np.isfinite(source), source, -np.inf), axis=0)
-            heights = (
-                np.asarray(data["receiver_z_m"], dtype=np.float32)
-                if "receiver_z_m" in data
-                else None
-            )
-            cell = float(data["cell_size_m"])
-            overlap = float(data["overlap_m"])
-            crop = round(overlap / cell)
-            if crop:
-                strongest = strongest[crop:-crop, crop:-crop]
-                if heights is not None:
-                    heights = heights[crop:-crop, crop:-crop]
-            strongest = strongest[::stride, ::stride]
-            if heights is not None:
-                heights = heights[::stride, ::stride]
-            center_x, center_y = map(float, data["tile_center"])
-            half = float(data["tile_size_m"]) / 2.0
-            run = json.loads(
-                (selected.paths.runs / run_id / "run.json").read_text(encoding="utf-8")
-            )
-            scene_xml = selected.resolve_path(run["scene_xml"])
-            metadata = json.loads(
-                (scene_xml.parent / "scene_metadata.json").read_text(encoding="utf-8")
-            )
-            from pyproj import Transformer
-
-            origin = metadata["local_origin"]
-            to_wgs84 = Transformer.from_crs(metadata["target_crs"], "EPSG:4326", always_xy=True)
-            corners = [
-                to_wgs84.transform(
-                    float(origin["easting"]) + center_x + dx,
-                    float(origin["northing"]) + center_y + dy,
+            if stitched:
+                strongest = strongest[::stride, ::stride]
+                bounds = np.asarray(data["bounds_wgs84"], dtype=np.float64).tolist()
+                cell = float(data["cell_size_m"])
+                payload: dict[str, object] = {
+                    "tile": safe_name,
+                    "tile_center": [0.0, 0.0],
+                    "tile_size_m": float(data["width_m"]),
+                    "overlap_m": 0.0,
+                    "cell_size_m": cell * stride,
+                    "bounds_wgs84": bounds,
+                    "frequency_group_mhz": (
+                        None if combined else float(np.asarray(data["frequency_mhz"]))
+                    ),
+                    "metric": metric,
+                    "field": maximum_field,
+                    "unit": unit,
+                    "no_data_value": -200.0,
+                    "valid_cell_count": int(np.isfinite(strongest).sum()),
+                }
+                heights = None
+            else:
+                heights = (
+                    np.asarray(data["receiver_z_m"], dtype=np.float32)
+                    if "receiver_z_m" in data
+                    else None
                 )
-                for dx, dy in ((-half, -half), (half, -half), (half, half), (-half, half))
-            ]
-            return {
-                "tile": safe_name,
-                "tile_center": data["tile_center"].tolist(),
-                "tile_size_m": float(data["tile_size_m"]),
-                "overlap_m": float(data["overlap_m"]),
-                "cell_size_m": cell * stride,
-                "bounds_wgs84": [
-                    min(point[0] for point in corners),
-                    min(point[1] for point in corners),
-                    max(point[0] for point in corners),
-                    max(point[1] for point in corners),
-                ],
-                "frequency_group_mhz": float(
-                    data["trace_frequency_mhz"]
-                    if "trace_frequency_mhz" in data
-                    else np.median(data["frequencies_mhz"])
-                ),
-                "metric": metric,
-                "field": maximum_field,
-                "unit": unit,
-                "no_data_value": -200.0,
-                "valid_cell_count": int(np.isfinite(strongest).sum()),
-                "values": np.nan_to_num(strongest, nan=-200.0, neginf=-200.0, posinf=50.0).tolist(),
-                "heights_m": heights.tolist() if heights is not None else None,
+                cell = float(data["cell_size_m"])
+                overlap = float(data["overlap_m"])
+                crop = round(overlap / cell)
+                if crop:
+                    strongest = strongest[crop:-crop, crop:-crop]
+                    if heights is not None:
+                        heights = heights[crop:-crop, crop:-crop]
+                strongest = strongest[::stride, ::stride]
+                if heights is not None:
+                    heights = heights[::stride, ::stride]
+                center_x, center_y = map(float, data["tile_center"])
+                half = float(data["tile_size_m"]) / 2.0
+                run = json.loads(
+                    (selected.paths.runs / safe_run_id / "run.json").read_text(encoding="utf-8")
+                )
+                scene_xml = selected.resolve_path(run["scene_xml"])
+                metadata = json.loads(
+                    (scene_xml.parent / "scene_metadata.json").read_text(encoding="utf-8")
+                )
+                from pyproj import Transformer
+
+                origin = metadata["local_origin"]
+                to_wgs84 = Transformer.from_crs(
+                    metadata["target_crs"], "EPSG:4326", always_xy=True
+                )
+                corners = [
+                    to_wgs84.transform(
+                        float(origin["easting"]) + center_x + dx,
+                        float(origin["northing"]) + center_y + dy,
+                    )
+                    for dx, dy in ((-half, -half), (half, -half), (half, half), (-half, half))
+                ]
+                payload = {
+                    "tile": safe_name,
+                    "tile_center": data["tile_center"].tolist(),
+                    "tile_size_m": float(data["tile_size_m"]),
+                    "overlap_m": float(data["overlap_m"]),
+                    "cell_size_m": cell * stride,
+                    "bounds_wgs84": [
+                        min(point[0] for point in corners),
+                        min(point[1] for point in corners),
+                        max(point[0] for point in corners),
+                        max(point[1] for point in corners),
+                    ],
+                    "frequency_group_mhz": float(
+                        data["trace_frequency_mhz"]
+                        if "trace_frequency_mhz" in data
+                        else np.median(data["frequencies_mhz"])
+                    ),
+                    "metric": metric,
+                    "field": maximum_field,
+                    "unit": unit,
+                    "no_data_value": -200.0,
+                    "valid_cell_count": int(np.isfinite(strongest).sum()),
+                }
+
+        stat = path.stat()
+        version = f"{stat.st_mtime_ns:x}-{stat.st_size:x}-r{COVERAGE_RENDER_VERSION}"
+        image_url = (
+            f"/v1/coverage/{quote(safe_run_id, safe='')}/{quote(safe_name, safe='')}"
+            f"?stride={stride}&metric={metric}&format=png&source={layer_dir}&v={version}"
+        )
+        payload.update(
+            {
+                "artifact_version": version,
+                "image_url": image_url,
+                "pixel_width": int(strongest.shape[1]),
+                "pixel_height": int(strongest.shape[0]),
+                "heights_m": None,
             }
+        )
+        if format == "png":
+            cache_path = (
+                selected.paths.runs
+                / safe_run_id
+                / "cache"
+                / "coverage"
+                / f"{layer_dir}-{path.stem}-{metric}-s{stride}-{version}.png"
+            )
+            if not cache_path.exists():
+                _write_coverage_png(cache_path, strongest, metric)
+            return FileResponse(
+                cache_path,
+                media_type="image/png",
+                headers={"Cache-Control": "public, max-age=31536000, immutable"},
+            )
+        if format == "metadata":
+            return JSONResponse(
+                payload,
+                headers={"Cache-Control": "public, max-age=60, stale-while-revalidate=300"},
+            )
+        payload["values"] = np.nan_to_num(
+            strongest, nan=-200.0, neginf=-200.0, posinf=50.0
+        ).tolist()
+        payload["heights_m"] = heights.tolist() if heights is not None else None
+        return payload
 
     @app.get("/v1/scenes/{scene_name}/buildings")
     def scene_buildings(scene_name: str) -> FileResponse:

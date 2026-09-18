@@ -10,18 +10,22 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) 460px; height: 100vh
 .cesium-status { position: absolute; right: 24px; bottom: 25px; max-width: 360px; padding: 8px 11px; border: 1px solid #29415d; border-radius: 8px; background: rgba(7,17,31,.88); color: #9db0c8; font: 500 9px 'JetBrains Mono',monospace; }
 .cesium-status strong { display:block; margin-top:5px; color:#d7f7a8; font-weight:600; }
 .cesium-status span { display:block; margin-top:4px; color:#7dd3fc; }
+.coverage-progress { position:absolute; z-index:6; left:50%; top:24px; transform:translateX(-50%); display:flex; align-items:center; gap:8px; padding:8px 12px; border:1px solid #28658a; border-radius:999px; background:rgba(7,17,31,.92); color:#d8edff; font:600 10px 'JetBrains Mono',monospace; box-shadow:0 8px 30px #0007; }
+.coverage-progress i { width:10px; height:10px; border:2px solid #295979; border-top-color:#38bdf8; border-radius:50%; animation:coverage-spin .8s linear infinite; }
+@keyframes coverage-spin { to { transform:rotate(360deg); } }
 .view-switch { position: absolute; z-index: 5; right: 24px; top: 24px; display: flex; gap: 3px; padding: 4px; border: 1px solid #29415d; border-radius: 10px; background: rgba(7,17,31,.88); }
 .view-switch button { width: auto; margin: 0; padding: 8px 11px; border: 1px solid transparent; background: transparent; box-shadow: none; color: #91a5be; font-size: 11px; }
 .view-switch button.active { border-color: #28658a; background: #0e3550; color: #e8f1ff; }
 .capture-map { grid-template-columns: 1fr; }
 .capture-map .map-shell { height: 100vh; }
 .capture-map aside { display: none; }
-.brand { position: absolute; left: 28px; top: 26px; padding: 18px 22px; background: rgba(7,17,31,.86); border: 1px solid #1f3856; border-radius: 14px; backdrop-filter: blur(14px); box-shadow: 0 18px 60px #0008; }
-.technology-lockup { display:flex; align-items:center; gap:9px; height:24px; margin:-4px 0 8px; color:#8198b3; }
-.technology-lockup img { width:88px; height:50px; object-fit:contain; margin:-13px -8px -13px -9px; }
-.technology-lockup span { color:#516b88; font-size:12px; }
-.technology-lockup strong { font:600 10px 'JetBrains Mono',monospace; letter-spacing:.08em; color:#f2f5f8; }
-.brand h1 { margin: 4px 0 2px; font-size: 24px; letter-spacing: -.04em; }
+.brand { position: absolute; left: 28px; top: 26px; min-width: 330px; overflow: hidden; padding: 20px 22px 0; background: rgba(7,17,31,.9); border: 1px solid #29415d; border-radius: 14px; backdrop-filter: blur(14px); box-shadow: 0 18px 60px #0008; }
+.technology-lockup { display:flex; align-items:center; gap:11px; height:46px; margin:17px -22px 0; padding:0 22px; border-top:1px solid #1f3856; background:rgba(3,10,20,.38); color:#8198b3; }
+.technology-lockup img { display:block; width:68px; height:38px; object-fit:contain; }
+.technology-label { font:600 7px 'JetBrains Mono',monospace; letter-spacing:.14em; color:#607995; }
+.technology-divider { width:1px; height:16px; background:#29415d; }
+.technology-lockup strong { font:600 9px 'JetBrains Mono',monospace; letter-spacing:.08em; color:#dce8f5; }
+.brand h1 { margin: 6px 0 5px; font-size: 25px; line-height: 1.05; letter-spacing: -.04em; }
 .brand p, header p { margin: 0; color: #93a9c4; }
 .eyebrow { font: 500 10px 'JetBrains Mono', monospace; letter-spacing: .16em; color: #38bdf8; }
 .legend { position: absolute; display: flex; align-items: center; gap: 5px; left: 28px; bottom: 26px; padding: 9px 12px; border: 1px solid #1f3856; border-radius: 999px; background: rgba(7,17,31,.88); color: #9db0c8; font-size: 11px; }

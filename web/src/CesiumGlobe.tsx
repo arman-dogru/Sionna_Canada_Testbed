@@ -5,7 +5,6 @@ import {
   Cartesian2,
   Cartesian3,
   Cartographic,
-  Cesium3DTileStyle,
   Color,
   ColorMaterialProperty,
   ConstantProperty,
@@ -27,12 +26,29 @@ import {
   createOsmBuildingsAsync,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
-import {coverageCanvas, CoverageTile} from './coverage';
+import {coverageImage, CoverageTile} from './coverage';
 
 type FeatureCollection = {type: 'FeatureCollection'; features: Array<any>};
 type Coordinate = {latitude: number; longitude: number};
 type FocusArea = {key: string; latitude: number; longitude: number; widthM: number};
 export type CesiumContentMode = 'photorealistic' | 'planning';
+
+// This is a visualization offset only: the saved Sionna receiver heights and
+// RF values are unchanged. Keeping the translucent analysis plane above the
+// low-rise photogrammetry prevents it from clipping into Google's terrain mesh.
+const PHOTO_COVERAGE_HEIGHT_AGL_M = 35;
+const PHOTO_COVERAGE_ALPHA = 0.72;
+
+function environmentMegabytes(raw: string | undefined, fallback: number) {
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? Math.min(Math.max(Math.round(parsed), 128), 4096) : fallback;
+}
+
+const PHOTO_TILE_CACHE_MB = environmentMegabytes(import.meta.env.VITE_CESIUM_TILE_CACHE_MB, 1024);
+const PHOTO_TILE_CACHE_OVERFLOW_MB = environmentMegabytes(
+  import.meta.env.VITE_CESIUM_TILE_CACHE_OVERFLOW_MB,
+  512,
+);
 
 type Props = {
   anchor: Coordinate;
@@ -91,10 +107,14 @@ export default function CesiumGlobe({
       sceneModePicker: true,
       selectionIndicator: false,
       timeline: false,
-      terrain: token && !photorealistic ? Terrain.fromWorldTerrain({requestVertexNormals: true}) : undefined,
+      terrain: token ? Terrain.fromWorldTerrain({requestVertexNormals: true}) : undefined,
     });
     viewerRef.current = viewer;
     viewer.scene.globe.baseColor = Color.fromCssColorString('#0b1829');
+    // Google Photorealistic 3D Tiles already provide their own terrain mesh.
+    // Keep World Terrain available for AGL height sampling, but do not render
+    // or depth-test the globe against Google's sometimes sub-ellipsoid mesh.
+    viewer.scene.globe.show = !photorealistic;
     viewer.scene.globe.depthTestAgainstTerrain = Boolean(token) && !photorealistic;
     viewer.camera.flyTo({
       destination: Cartesian3.fromDegrees(anchor.longitude, anchor.latitude, 5200),
@@ -102,17 +122,58 @@ export default function CesiumGlobe({
       duration: 0,
     });
 
+    let removePhotoProgress: (() => void) | undefined;
+    let removePhotoReady: (() => void) | undefined;
+    let removePhotoFailure: (() => void) | undefined;
     if (photorealistic) {
+      setStatus('Connecting to Google Photorealistic 3D Tiles…');
       createGooglePhotorealistic3DTileset(
         {onlyUsingWithGoogleGeocoder: true},
-        {maximumScreenSpaceError: 3, dynamicScreenSpaceError: true},
+        {
+          // Cesium recommends 8–16 as a high-fidelity range. The previous 1.25
+          // setting over-refined the entire 6 km overview and thrashed textures.
+          maximumScreenSpaceError: 8,
+          dynamicScreenSpaceError: true,
+          dynamicScreenSpaceErrorDensity: 1.5e-4,
+          dynamicScreenSpaceErrorFactor: 12,
+          progressiveResolutionHeightFraction: 0.3,
+          foveatedScreenSpaceError: true,
+          preloadFlightDestinations: true,
+          cacheBytes: PHOTO_TILE_CACHE_MB * 1024 * 1024,
+          maximumCacheOverflowBytes: PHOTO_TILE_CACHE_OVERFLOW_MB * 1024 * 1024,
+        },
       )
         .then(tileset => {
-          tileset.style = new Cesium3DTileStyle({color: 'color("white", 0.80)'});
+          if (viewer.isDestroyed()) return;
+          // Google Photorealistic 3D Tiles are opaque by default. Do not apply
+          // an alpha style: it makes buildings look translucent and causes the
+          // RF layer to show through their walls and roofs.
           viewer.scene.primitives.add(tileset);
+          let failedTiles = 0;
+          const readyStatus = () => {
+            const cacheMb = Math.round(tileset.totalMemoryUsageInBytes / (1024 * 1024));
+            setStatus(failedTiles
+              ? `Google Photo 3D degraded · ${failedTiles} failed tile${failedTiles === 1 ? '' : 's'} · ${cacheMb}/${PHOTO_TILE_CACHE_MB} MB cache`
+              : `Google Photo 3D ready · ${cacheMb}/${PHOTO_TILE_CACHE_MB} MB tile cache`);
+          };
+          removePhotoProgress = tileset.loadProgress.addEventListener(
+            (pendingRequests: number, processingTiles: number) => {
+              if (pendingRequests || processingTiles) {
+                setStatus(`Google Photo 3D loading · ${pendingRequests} requests · ${processingTiles} processing${failedTiles ? ` · ${failedTiles} failed` : ''}`);
+              } else {
+                readyStatus();
+              }
+            },
+          );
+          removePhotoReady = tileset.allTilesLoaded.addEventListener(readyStatus);
+          removePhotoFailure = tileset.tileFailed.addEventListener(() => {
+            failedTiles += 1;
+            readyStatus();
+          });
         })
-        .then(() => setStatus('Google Photorealistic 3D Tiles · streamed by Cesium ion · visual layer'))
-        .catch(error => setStatus(`Photorealistic tiles unavailable · ${String(error)}`));
+        .catch(error => {
+          if (!viewer.isDestroyed()) setStatus(`Photorealistic tiles unavailable · ${String(error)}`);
+        });
     } else if (token && import.meta.env.VITE_CESIUM_ENABLE_OSM_BUILDINGS !== 'false') {
       createOsmBuildingsAsync()
         .then(tileset => viewer.scene.primitives.add(tileset))
@@ -136,6 +197,9 @@ export default function CesiumGlobe({
     }, ScreenSpaceEventType.LEFT_CLICK);
 
     return () => {
+      removePhotoProgress?.();
+      removePhotoReady?.();
+      removePhotoFailure?.();
       handler.destroy();
       viewerRef.current = null;
       viewer.destroy();
@@ -194,30 +258,32 @@ export default function CesiumGlobe({
     const entities: Array<any> = [];
     coverage.forEach(tile => {
       const [west, south, east, north] = tile.bounds_wgs84;
-      const canvas = coverageCanvas(tile.values, tile.metric);
+      const image = coverageImage(tile);
       const rectangle = Rectangle.fromDegrees(west, south, east, north);
       if (photorealistic) {
-        // Photorealistic 3D Tiles are a mesh above globe imagery. Put the RF
-        // texture on a transparent analysis plane so the mesh cannot hide it.
+        // Use an elevated, translucent analysis surface. This avoids the
+        // streamed Google terrain/building mesh clipping a near-ground RF
+        // rectangle. The offset is display-only and never changes RF values.
         entities.push(viewer.entities.add({
           name: `Simulated ${tile.metric} · ${tile.tile}`,
           rectangle: {
             coordinates: rectangle,
             material: new ImageMaterialProperty({
-              image: canvas,
+              image,
               transparent: true,
-              color: Color.WHITE.withAlpha(0.92),
+              color: Color.WHITE.withAlpha(PHOTO_COVERAGE_ALPHA),
             }),
-            height: 120,
-            heightReference: HeightReference.NONE,
+            height: PHOTO_COVERAGE_HEIGHT_AGL_M,
+            heightReference: HeightReference.RELATIVE_TO_TERRAIN,
+            granularity: CesiumMath.toRadians(0.0001),
             outline: false,
           },
         }));
       } else {
         const layer = viewer.imageryLayers.addImageryProvider(new SingleTileImageryProvider({
-          url: canvas.toDataURL('image/png'),
-          tileWidth: canvas.width,
-          tileHeight: canvas.height,
+          url: typeof image === 'string' ? image : image.toDataURL('image/png'),
+          tileWidth: tile.pixel_width ?? (typeof image === 'string' ? 256 : image.width),
+          tileHeight: tile.pixel_height ?? (typeof image === 'string' ? 256 : image.height),
           rectangle,
         }));
         layer.alpha = 0.78;
@@ -226,8 +292,13 @@ export default function CesiumGlobe({
     });
     const metric = coverage[0]?.metric.toUpperCase() ?? '';
     const resolution = coverage[0]?.cell_size_m;
+    const frequency = coverage[0]?.frequency_group_mhz;
+    const frequencyLabel = coverage.length
+      ? frequency == null ? ' · combined bands' : ` · ${frequency.toFixed(1)} MHz`
+      : '';
+    const tileLabel = coverage.length === 1 ? 'raster' : 'tiles';
     setCoverageStatus(coverage.length
-      ? `${coverage.length} simulated ${metric} tiles · ${resolution} m cells${photorealistic ? ' · RF plane +120 m' : ''}`
+      ? `${coverage.length} simulated ${metric} ${tileLabel}${frequencyLabel} · ${resolution} m cells${photorealistic ? ` · elevated RF display +${PHOTO_COVERAGE_HEIGHT_AGL_M} m AGL` : ''}`
       : 'Simulation overlay off');
     viewer.scene.requestRender();
     return () => {

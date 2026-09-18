@@ -5,7 +5,7 @@ import {BitmapLayer, GeoJsonLayer, ScatterplotLayer} from '@deck.gl/layers';
 import Map, {MapRef} from 'react-map-gl/maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import CesiumGlobe, {CesiumContentMode} from './CesiumGlobe';
-import {coverageCanvas, CoverageMetric, CoverageTile, metricRgba} from './coverage';
+import {coverageImage, CoverageMetric, CoverageTile, metricRgba} from './coverage';
 import './styles.css';
 
 type FeatureCollection = {type: 'FeatureCollection'; features: Array<any>};
@@ -26,6 +26,8 @@ type RunSummary = {
   anchor_wgs84: Coordinate;
   frequency_groups_mhz: number[];
   coverage_tiles: string[];
+  stitched_coverage?: string[];
+  has_combined_coverage: boolean;
 };
 
 const anchor = {latitude: 45.340455200216, longitude: -75.91114196736};
@@ -46,6 +48,34 @@ const initialPitch = viewParameters.has('pitch') && Number.isFinite(requestedPit
 const initialBearing = viewParameters.has('bearing') && Number.isFinite(requestedBearing)
   ? requestedBearing : -18;
 const captureMapOnly = viewParameters.get('capture') === 'map';
+const coverageRequestCache = new globalThis.Map<string, Promise<CoverageTile>>();
+
+function cachedCoverage(url: string): Promise<CoverageTile> {
+  const existing = coverageRequestCache.get(url);
+  if (existing) return existing;
+  const request = fetch(url, {cache: 'force-cache'})
+    .then(response => response.ok ? response.json() : Promise.reject(response.statusText))
+    .then(async (tile: CoverageTile) => {
+      const normalized = {
+        ...tile,
+        image_url: tile.image_url?.startsWith('/') ? `${apiBase}${tile.image_url}` : tile.image_url,
+      };
+      const imageUrl = normalized.image_url;
+      if (imageUrl) {
+        await new Promise<void>((resolve, reject) => {
+          const image = new Image();
+          image.onload = () => resolve();
+          image.onerror = () => reject(new Error(`Coverage image unavailable: ${imageUrl}`));
+          image.src = imageUrl;
+          if (image.complete && image.naturalWidth > 0) resolve();
+        });
+      }
+      return normalized;
+    });
+  coverageRequestCache.set(url, request);
+  request.catch(() => coverageRequestCache.delete(url));
+  return request;
+}
 
 function runBounds(run: RunSummary): [[number, number], [number, number]] {
   const halfWidthM = run.width_m / 2;
@@ -67,6 +97,7 @@ function signalColor(value: number): string {
 
 function App() {
   const mapRef = useRef<MapRef | null>(null);
+  const runsInitializedRef = useRef(false);
   const [stations, setStations] = useState<FeatureCollection>({type: 'FeatureCollection', features: []});
   const [buildings, setBuildings] = useState<FeatureCollection>({type: 'FeatureCollection', features: []});
   const [point, setPoint] = useState(anchor);
@@ -81,6 +112,7 @@ function App() {
     requestedMetric && ['path_gain', 'rss', 'rsrp', 'sinr'].includes(requestedMetric) ? requestedMetric : 'rsrp'
   );
   const [coverage, setCoverage] = useState<CoverageTile[]>([]);
+  const [coverageLoad, setCoverageLoad] = useState<{loaded: number; total: number} | null>(null);
   const [viewMode, setViewMode] = useState<'map' | 'cesium'>(
     !captureMapOnly && (requestedView === 'cesium' || (
       requestedView !== 'map' && Boolean((import.meta.env.VITE_CESIUM_ION_TOKEN ?? '').trim())
@@ -106,37 +138,78 @@ function App() {
     fetch(`${apiBase}/v1/measurements?limit=10000`)
       .then(response => response.ok ? response.json() : {type: 'FeatureCollection', features: []})
       .then(setMeasurements).catch(() => undefined);
-    fetch(`${apiBase}/v1/runs`).then(response => response.json()).then((items: RunSummary[]) => {
-      setRuns(items);
-      const requested = items.find(item => item.run_id === requestedRunId && item.coverage_tiles?.length);
-      const available = requested ?? items.find(item => item.coverage_tiles?.length);
-      if (available) {
-        setSelectedRun(available.run_id);
+    const refreshRuns = () => fetch(`${apiBase}/v1/runs`)
+      .then(response => response.json())
+      .then((items: RunSummary[]) => {
+        setRuns(items);
+        if (runsInitializedRef.current) return;
+        runsInitializedRef.current = true;
+        const requested = items.find(item => item.run_id === requestedRunId && item.coverage_tiles?.length);
+        const available = requested ?? items.find(item => item.coverage_tiles?.length);
+        if (available) {
+          setSelectedRun(available.run_id);
         const first = available.frequency_groups_mhz?.find(group =>
+          available.stitched_coverage?.includes(`${group.toFixed(1)}MHz.npz`) ||
           available.coverage_tiles.some(name => name.endsWith(`${group.toFixed(1).replace('.', 'p')}MHz.npz`))
         );
-        if (requestedCoverageFrequency && available.frequency_groups_mhz?.includes(Number(requestedCoverageFrequency))) {
+          if (requestedCoverageFrequency === 'combined' && available.has_combined_coverage) {
+            setCoverageFrequency('combined');
+        } else if (requestedCoverageFrequency && available.frequency_groups_mhz?.includes(Number(requestedCoverageFrequency))) {
           setCoverageFrequency(requestedCoverageFrequency);
+        } else if (available.has_combined_coverage) {
+          setCoverageFrequency('combined');
         } else if (first !== undefined) setCoverageFrequency(String(first));
-      }
-    }).catch(() => undefined);
+        }
+      }).catch(() => undefined);
+    refreshRuns();
+    const refreshTimer = window.setInterval(refreshRuns, 15_000);
+    return () => window.clearInterval(refreshTimer);
   }, []);
-
-  useEffect(() => {
-    if (!selectedRun || !coverageFrequency) { setCoverage([]); return; }
-    const run = runs.find(item => item.run_id === selectedRun);
-    const suffix = `${Number(coverageFrequency).toFixed(1).replace('.', 'p')}MHz.npz`;
-    const names = run?.coverage_tiles?.filter(name => name.endsWith(suffix)) ?? [];
-    Promise.all(names.map(name => fetch(
-      `${apiBase}/v1/coverage/${selectedRun}/${name}?stride=1&metric=${coverageMetric}`
-    ).then(r => r.json())))
-      .then(setCoverage).catch(() => setCoverage([]));
-  }, [runs, selectedRun, coverageFrequency, coverageMetric]);
 
   const selectedRunSummary = useMemo(
     () => runs.find(run => run.run_id === selectedRun),
     [runs, selectedRun],
   );
+  const coverageInventoryKey = selectedRunSummary ? [
+    selectedRunSummary.run_id,
+    selectedRunSummary.cell_size_m,
+    selectedRunSummary.has_combined_coverage,
+    selectedRunSummary.coverage_tiles.length,
+    selectedRunSummary.stitched_coverage?.join('|') ?? '',
+  ].join(':') : '';
+
+  useEffect(() => {
+    if (!selectedRun || !coverageFrequency) { setCoverage([]); return; }
+    const run = selectedRunSummary;
+    const suffix = `${Number(coverageFrequency).toFixed(1).replace('.', 'p')}MHz.npz`;
+    const combined = coverageFrequency === 'combined';
+    const stitchedName = `${Number(coverageFrequency).toFixed(1)}MHz.npz`;
+    const useStitched = combined || Boolean(run?.stitched_coverage?.includes(stitchedName));
+    const names = combined && run?.has_combined_coverage
+      ? ['all-bands.npz']
+      : useStitched ? [stitchedName]
+      : run?.coverage_tiles?.filter(name => name.endsWith(suffix)) ?? [];
+    const stride = useStitched && Number(run?.cell_size_m ?? 5) < 5 ? 2 : 1;
+    const source = useStitched ? 'stitched' : 'tiles';
+    let cancelled = false;
+    let loaded = 0;
+    setCoverage([]);
+    setCoverageLoad(names.length ? {loaded: 0, total: names.length} : null);
+    Promise.all(names.map(name => cachedCoverage(
+      `${apiBase}/v1/coverage/${selectedRun}/${name}?stride=${stride}&metric=${coverageMetric}&format=metadata&source=${source}`
+    ).then(tile => {
+      loaded += 1;
+      if (!cancelled) setCoverageLoad({loaded, total: names.length});
+      return tile;
+    })))
+      .then(items => {
+        if (!cancelled) { setCoverage(items); setCoverageLoad(null); }
+      })
+      .catch(() => {
+        if (!cancelled) { setCoverage([]); setCoverageLoad(null); }
+      });
+    return () => { cancelled = true; };
+  }, [selectedRun, coverageFrequency, coverageMetric, coverageInventoryKey]);
 
   useEffect(() => {
     if (viewMode !== 'map' || !selectedRunSummary || !mapRef.current) return;
@@ -144,15 +217,21 @@ function App() {
       padding: 55,
       duration: 900,
     });
-  }, [selectedRunSummary, viewMode]);
+  }, [selectedRunSummary?.run_id, selectedRunSummary?.width_m,
+      selectedRunSummary?.anchor_wgs84.latitude, selectedRunSummary?.anchor_wgs84.longitude,
+      viewMode]);
 
   function selectRun(runId: string) {
     setSelectedRun(runId);
     const run = runs.find(item => item.run_id === runId);
     if (!run || !coverageFrequency) return;
+    if (coverageFrequency === 'combined') {
+      if (!run.has_combined_coverage) setCoverageFrequency('');
+      return;
+    }
     const selectedFrequency = Number(coverageFrequency);
     const available = run.frequency_groups_mhz.filter(group =>
-      run.coverage_tiles.some(name =>
+      run.stitched_coverage?.includes(`${group.toFixed(1)}MHz.npz`) || run.coverage_tiles.some(name =>
         name.endsWith(`${group.toFixed(1).replace('.', 'p')}MHz.npz`)
       )
     );
@@ -168,7 +247,9 @@ function App() {
       height_agl_m: String(height), limit: '12'
     });
     if (operator) params.set('operator', operator);
-    const queryFrequency = frequency || coverageFrequency;
+    const queryFrequency = frequency || (
+      coverageFrequency !== 'combined' ? coverageFrequency : ''
+    );
     if (queryFrequency) params.set('frequency_mhz', queryFrequency);
     if (selectedRun) params.set('run_id', selectedRun);
     try {
@@ -193,8 +274,9 @@ function App() {
 
   const layers = [
     ...coverage.map(tile => new BitmapLayer({
-      id: `coverage-${tile.tile}-${tile.metric}`, image: coverageCanvas(tile.values, tile.metric), bounds: tile.bounds_wgs84,
-      opacity: 0.72, pickable: false
+      id: `coverage-${tile.tile}-${tile.metric}`, image: coverageImage(tile), bounds: tile.bounds_wgs84,
+      opacity: 0.72, pickable: true,
+      onClick: info => { onDeckClick(info); return true; }
     })),
     new GeoJsonLayer({
       id: 'buildings', data: buildings as any, extruded: true, wireframe: false,
@@ -216,7 +298,8 @@ function App() {
     }),
     new GeoJsonLayer({
       id: 'sectors', data: filtered as any, pickable: true, pointRadiusMinPixels: 3,
-      getPointRadius: 35, getFillColor: [56, 189, 248, 175], getLineColor: [224, 242, 254, 220]
+      getPointRadius: 35, getFillColor: [56, 189, 248, 175], getLineColor: [224, 242, 254, 220],
+      onClick: info => { onDeckClick(info); return true; }
     }),
     new ScatterplotLayer({
       id: 'query-point', data: [[point.longitude, point.latitude]],
@@ -267,19 +350,23 @@ function App() {
         <button className={viewMode === 'cesium' && cesiumContent === 'planning' ? 'active' : ''}
           onClick={() => { setCesiumContent('planning'); setViewMode('cesium'); }}>Planning 3D</button>
       </div>}
+      {coverageLoad && <div className="coverage-progress" role="status">
+        <i /> Loading coverage {coverageLoad.loaded}/{coverageLoad.total}
+      </div>}
       <div className="brand">
+        <span className="eyebrow">SIONNA RT</span>
+        <h1>Wireless Infrastructure<br/>Digital Twin</h1>
+        <p>Kanata, Ottawa, Canada</p>
         <div className="technology-lockup">
-              <img
-                src="/whiteLOGO.svg"
-                alt="NVIDIA"
-                title="NVIDIA GPU acceleration; technology identification only"
-              />
-          <span>+</span>
+          <span className="technology-label">TECHNOLOGY</span>
+          <img
+            src="/whiteLOGO.svg"
+            alt="NVIDIA"
+            title="NVIDIA GPU acceleration; technology identification only"
+          />
+          <span className="technology-divider" aria-hidden="true"/>
           <strong>CESIUM ion</strong>
         </div>
-        <span className="eyebrow">SIONNA RT · OTTAWA</span>
-        <h1>Cellular Digital Twin</h1>
-        <p>350 Legget Drive testbed</p>
       </div>
       <div className="legend"><span>Strong</span><i className="good"/><i className="fair"/><i className="weak"/><i className="poor"/><span>Weak</span></div>
     </section>
@@ -296,7 +383,10 @@ function App() {
             <option key={run.run_id} value={run.run_id}>{run.run_id} · {run.cell_size_m} m</option>)}
         </select></label>
         <label className="wide">Coverage overlay<select value={coverageFrequency} onChange={e => setCoverageFrequency(e.target.value)}>
-          <option value="">Off</option>{(runs.find(run => run.run_id === selectedRun)?.frequency_groups_mhz ?? []).map(value =>
+          <option value="">Off</option>
+          {runs.find(run => run.run_id === selectedRun)?.has_combined_coverage &&
+            <option value="combined">Combined · best available band</option>}
+          {(runs.find(run => run.run_id === selectedRun)?.frequency_groups_mhz ?? []).map(value =>
             <option key={value} value={value}>{value.toFixed(1)} MHz</option>)}</select></label>
         <label className="wide">Coverage metric<select value={coverageMetric} onChange={e => setCoverageMetric(e.target.value as CoverageMetric)}>
           <option value="path_gain">Highest path gain</option>

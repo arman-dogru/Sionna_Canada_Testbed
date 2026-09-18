@@ -32,6 +32,12 @@ def _maximum(data: object, output_name: str) -> np.ndarray:
     return np.max(safe, axis=0).astype(np.float32)
 
 
+def _finite_max(arrays: list[np.ndarray]) -> np.ndarray:
+    """Take a maximum while preserving cells reached by any input layer."""
+    stacked = np.stack(arrays)
+    return np.max(np.where(np.isfinite(stacked), stacked, -np.inf), axis=0)
+
+
 def _summary(data: object) -> tuple[dict[str, np.ndarray], np.ndarray]:
     metrics = {name: _maximum(data, name) for name in METRIC_SOURCES}
     rsrp = np.asarray(data["rsrp_dbm"])
@@ -42,6 +48,41 @@ def _summary(data: object) -> tuple[dict[str, np.ndarray], np.ndarray]:
     serving = sectors[association]
     serving[~np.any(finite, axis=0)] = ""
     return metrics, serving
+
+
+def _compact_summary(
+    data: object,
+    sector_to_index: dict[str, int],
+    sector_ids: list[str],
+) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    """Return tile metrics with a compact serving-sector index grid.
+
+    A full-resolution ``<U256`` sector-name grid is several gigabytes for the
+    6 km / 2.5 m run. Store integer codes in the raster and a small lookup table
+    instead. Index zero is reserved for cells with no received signal.
+    """
+    metrics = {name: _maximum(data, name) for name in METRIC_SOURCES}
+    rsrp = np.asarray(data["rsrp_dbm"])
+    finite = np.isfinite(rsrp)
+    safe = np.where(finite, rsrp, -np.inf)
+    association = np.argmax(safe, axis=0)
+    local_sector_ids = np.asarray(data["sector_ids"]).astype(str)
+    local_to_output = np.empty(local_sector_ids.size, dtype=np.uint32)
+    for local_index, sector_id in enumerate(local_sector_ids):
+        output_index = sector_to_index.get(sector_id)
+        if output_index is None:
+            output_index = len(sector_ids)
+            sector_to_index[sector_id] = output_index
+            sector_ids.append(sector_id)
+        local_to_output[local_index] = output_index
+    serving = local_to_output[association]
+    serving[~np.any(finite, axis=0)] = 0
+    return metrics, serving
+
+
+def _sector_table(values: list[str]) -> np.ndarray:
+    width = max(1, max((len(value) for value in values), default=0))
+    return np.asarray(values, dtype=f"<U{width}")
 
 
 def _strongest(data: object) -> tuple[np.ndarray, np.ndarray]:
@@ -109,7 +150,11 @@ def stitch_run(settings: Settings, run_id: str) -> dict[str, object]:
     output_dir = run_dir / "stitched"
     output_dir.mkdir(exist_ok=True)
     reports = []
-    completed_layers: list[tuple[float, dict[str, np.ndarray], np.ndarray]] = []
+    aggregate_metrics: dict[str, np.ndarray] | None = None
+    aggregate_serving: np.ndarray | None = None
+    aggregate_frequency: np.ndarray | None = None
+    aggregate_sector_ids = [""]
+    aggregate_sector_to_index = {"": 0}
     output_bbox = bbox_from_center(*settings.anchor, float(manifest["width_m"]))
     bounds_wgs84 = np.asarray(
         [output_bbox.west, output_bbox.south, output_bbox.east, output_bbox.north]
@@ -130,11 +175,15 @@ def stitch_run(settings: Settings, run_id: str) -> dict[str, object]:
             name: np.full((side * core_cells, side * core_cells), -np.inf, dtype=np.float32)
             for name in METRIC_SOURCES
         }
-        stitched_serving = np.full(next(iter(stitched_metrics.values())).shape, "", dtype="<U256")
+        stitched_serving = np.zeros(next(iter(stitched_metrics.values())).shape, dtype=np.uint32)
+        frequency_sector_ids = [""]
+        frequency_sector_to_index = {"": 0}
         full_tiles: dict[tuple[int, int], np.ndarray] = {}
         for path, row, column in paths:
             with np.load(path, allow_pickle=False) as data:
-                metrics, serving = _summary(data)
+                metrics, serving = _compact_summary(
+                    data, frequency_sector_to_index, frequency_sector_ids
+                )
             full_tiles[(row, column)] = metrics["max_rsrp_dbm"]
             core_serving = serving[crop : crop + core_cells, crop : crop + core_cells]
             row_slice = slice(row * core_cells, (row + 1) * core_cells)
@@ -149,13 +198,14 @@ def stitch_run(settings: Settings, run_id: str) -> dict[str, object]:
             output,
             **stitched_metrics,
             strongest_rsrp_dbm=stitched_metrics["max_rsrp_dbm"],
-            serving_sector_id=stitched_serving,
+            serving_sector_index=stitched_serving,
+            sector_ids=_sector_table(frequency_sector_ids),
             frequency_mhz=np.asarray(frequency),
             cell_size_m=np.asarray(cell),
             width_m=np.asarray(float(manifest["width_m"])),
             bounds_wgs84=bounds_wgs84,
             anchor_wgs84=np.asarray([settings.anchor[1], settings.anchor[0]]),
-            visualization_schema_version=np.asarray(1),
+            visualization_schema_version=np.asarray(2),
         )
         seam = _seam_statistics(full_tiles, crop)
         reports.append(
@@ -167,35 +217,57 @@ def stitch_run(settings: Settings, run_id: str) -> dict[str, object]:
                 "seam": seam,
             }
         )
-        completed_layers.append((frequency, stitched_metrics, stitched_serving))
+        if aggregate_metrics is None:
+            shape = stitched_metrics["max_rsrp_dbm"].shape
+            aggregate_metrics = {
+                name: np.full(shape, -np.inf, dtype=np.float32) for name in METRIC_SOURCES
+            }
+            aggregate_serving = np.zeros(shape, dtype=np.uint32)
+            aggregate_frequency = np.full(shape, np.nan, dtype=np.float32)
+
+        assert aggregate_serving is not None
+        assert aggregate_frequency is not None
+        current_rsrp = stitched_metrics["max_rsrp_dbm"]
+        previous_rsrp = aggregate_metrics["max_rsrp_dbm"]
+        winning = np.isfinite(current_rsrp) & (
+            ~np.isfinite(previous_rsrp) | (current_rsrp > previous_rsrp)
+        )
+        local_to_aggregate = np.empty(len(frequency_sector_ids), dtype=np.uint32)
+        for local_index, sector_id in enumerate(frequency_sector_ids):
+            aggregate_index = aggregate_sector_to_index.get(sector_id)
+            if aggregate_index is None:
+                aggregate_index = len(aggregate_sector_ids)
+                aggregate_sector_to_index[sector_id] = aggregate_index
+                aggregate_sector_ids.append(sector_id)
+            local_to_aggregate[local_index] = aggregate_index
+        aggregate_serving[winning] = local_to_aggregate[stitched_serving[winning]]
+        aggregate_frequency[winning] = frequency
+        for name, values in stitched_metrics.items():
+            current_finite = np.isfinite(values)
+            aggregate_values = aggregate_metrics[name]
+            replace = current_finite & (
+                ~np.isfinite(aggregate_values) | (values > aggregate_values)
+            )
+            aggregate_values[replace] = values[replace]
 
     aggregate_path = None
-    if completed_layers:
-        aggregate_metrics = {
-            name: np.max(np.stack([item[1][name] for item in completed_layers]), axis=0)
-            for name in METRIC_SOURCES
-        }
-        rsrp_stack = np.stack([item[1]["max_rsrp_dbm"] for item in completed_layers])
-        association = np.argmax(rsrp_stack, axis=0)
+    if aggregate_metrics is not None:
+        assert aggregate_serving is not None
+        assert aggregate_frequency is not None
         aggregate_rsrp = aggregate_metrics["max_rsrp_dbm"]
-        serving = np.empty(aggregate_rsrp.shape, dtype="<U256")
-        frequency = np.empty(aggregate_rsrp.shape, dtype=np.float32)
-        for index, (group_frequency, _, group_serving) in enumerate(completed_layers):
-            mask = association == index
-            serving[mask] = group_serving[mask]
-            frequency[mask] = group_frequency
         aggregate_path = output_dir / "all-bands.npz"
         np.savez_compressed(
             aggregate_path,
             **aggregate_metrics,
             strongest_rsrp_dbm=aggregate_rsrp,
-            serving_sector_id=serving,
-            frequency_mhz=frequency,
+            serving_sector_index=aggregate_serving,
+            sector_ids=_sector_table(aggregate_sector_ids),
+            frequency_mhz=aggregate_frequency,
             cell_size_m=np.asarray(float(manifest["cell_size_m"])),
             width_m=np.asarray(float(manifest["width_m"])),
             bounds_wgs84=bounds_wgs84,
             anchor_wgs84=np.asarray([settings.anchor[1], settings.anchor[0]]),
-            visualization_schema_version=np.asarray(1),
+            visualization_schema_version=np.asarray(2),
         )
 
     report = {

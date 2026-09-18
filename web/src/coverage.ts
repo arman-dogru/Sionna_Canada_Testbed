@@ -9,7 +9,12 @@ export type CoverageTile = {
   no_data_value: number;
   valid_cell_count: number;
   cell_size_m: number;
-  values: number[][];
+  frequency_group_mhz?: number | null;
+  values?: number[][];
+  image_url?: string;
+  artifact_version?: string;
+  pixel_width?: number;
+  pixel_height?: number;
   heights_m?: number[][] | null;
 };
 
@@ -57,4 +62,8 @@ export function coverageCanvas(values: number[][], metric: CoverageMetric): HTML
   }));
   context.putImageData(image, 0, 0);
   return canvas;
+}
+
+export function coverageImage(tile: CoverageTile): string | HTMLCanvasElement {
+  return tile.image_url ?? coverageCanvas(tile.values ?? [], tile.metric);
 }

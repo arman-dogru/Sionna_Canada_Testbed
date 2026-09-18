@@ -22,6 +22,12 @@ web/.env.local
 web/.env.*.local
 *.tsbuildinfo
 
+# Local secrets / environment overrides
+.env
+.env.*
+!.env.example
+!web/.env.example
+
 # Project data
 data/raw/
 data/processed/
@@ -32,6 +38,7 @@ data/calibration/
 
 # Generated Chrome/Chromium browser profiles
 data/browser-profile-*/
+.tmp/
 
 # Keep data directory in Git
 !data/.gitkeep
@@ -42,9 +49,9 @@ data/browser-profile-*/
 # Local disposable caches
 .cache/
 
-# Legacy/local tool artifacts
-.pytest_cache/
-.pytest-tmp*/
-.pytest_tmp*/
-.ruff_cache/
-.chrome-debug*/
+# Generated screenshots and browser-test artifacts
+artifacts/
+
+# Runtime output
+*.log
+*.pid

@@ -73,9 +73,12 @@ The browser provides:
 - Planning 3D using reproducible public Ottawa geometry.
 - Photo 3D using Cesium ion and Google Photorealistic 3D Tiles.
 - Run, band, and metric selection for path gain, RSS, RSRP, and SINR.
+- A `Combined · best available band` layer for finalized multiband runs.
 - Station markers, coordinate queries, receiver height, ranked sectors, confidence flags, and calibration comparisons.
 
 Selecting a run recenters the map on that run's bounds. Photo 3D is only a visualization layer: Sionna traces against the saved scene under `data/scenes`, not against streamed Cesium/Google geometry.
+
+The Combined layer takes the best finite value across the simulated bands at each receiver cell. It is useful as a presentation overview, but it is not carrier aggregation, one operator's guaranteed service footprint, or a capacity estimate. For demonstrations, lead with Combined RSRP, then compare 890 MHz RSRP for macro coverage, 2655 MHz RSRP/SINR for a capacity layer, and optionally 3505 MHz SINR for localized 5G behavior.
 
 ## 4. Configure Cesium ion
 
@@ -91,6 +94,8 @@ Edit `web/.env.local`:
 VITE_CESIUM_ION_TOKEN=your_token_here
 VITE_CESIUM_ENABLE_OSM_BUILDINGS=true
 VITE_CESIUM_ENABLE_PHOTOREALISTIC=true
+VITE_CESIUM_TILE_CACHE_MB=1024
+VITE_CESIUM_TILE_CACHE_OVERFLOW_MB=512
 ```
 
 Then rebuild and restart the API:
@@ -101,6 +106,22 @@ python -m ottawa_rt.cli serve --config config/demo-4km-5m.yaml --host 127.0.0.1 
 ```
 
 `web/.env.local` is gitignored. Do not place a token in a ZIP, commit, YAML configuration, screenshot, or run artifact. If a token is exposed, revoke it in Cesium ion and issue another one.
+
+### Demo preparation and 10 km viewing
+
+The coverage rasters are generated once under `data/runs/<run-id>/cache/coverage` and served with immutable browser-cache headers. Open every band/metric needed for the demo once before presenting so those local overlays are warm.
+
+Google Photorealistic 3D Tiles are streamed and refined for the current camera view. The GUI keeps up to `VITE_CESIUM_TILE_CACHE_MB` in GPU memory, plus the configured overflow while a view is refining, and preloads the destination of camera flights. A 1 GB cache with 512 MB overflow is appropriate for the 8 GB RTX 3070 demo machine; reduce it to 512/256 if the browser reports GPU-memory pressure.
+
+For a smooth live demo:
+
+1. Use a wired connection and close other GPU-heavy applications.
+2. Open Photo 3D five to ten minutes before presenting.
+3. Visit the overview and the exact close-up viewpoints in presentation order, then leave the tab open.
+4. Wait for the status to say `Google Photo 3D ready` before beginning.
+5. Move between rehearsed views with camera flights rather than rapidly spinning across the whole city.
+
+Do not bulk-download or rehost Google's 10 km photorealistic area. Its tiles may only use the normal HTTP caching allowed by the service response. If a guaranteed offline 10 km demo is required, convert Ottawa's licensed public terrain/building/imagery sources into a self-hosted 3D Tiles tileset and select that instead of Google Photo 3D. The Sionna coverage cache can remain unchanged.
 
 ## 5. Build a fresh public-data snapshot and scene
 
@@ -263,9 +284,10 @@ Every GUI-visible run is self-describing under `data/runs/<run-id>`:
 | `surfaces/` | Terrain-draped receiver surfaces for each tile. |
 | `queue/` | Durable atomic job records, worker metrics, and errors. |
 | `tiles/*.npz` | Raw per-tile/per-band metrics and per-sector information used by queries and calibration. |
-| `stitched/<frequency>MHz.npz` | Full-area path gain, RSS, RSRP, SINR, and serving-sector arrays. |
-| `stitched/all-bands.npz` | Aggregate strongest coverage across bands. |
+| `stitched/<frequency>MHz.npz` | Full-area path gain, RSS, RSRP, SINR, and compact serving-sector index arrays with a sector-ID lookup table. |
+| `stitched/all-bands.npz` | Aggregate strongest coverage across bands, including the winning frequency and compact serving-sector index. |
 | `stitched/stitch-report.json` | Completed tile counts and overlap seam diagnostics. |
+| `cache/coverage/*.png` | Versioned browser-ready coverage rasters generated on first view and reused by both 2D and 3D GUIs. |
 | `visualization/*-summary.png` | Reference-style three-panel engineering figures. |
 | `visualization/visualization-report.json` | Image sources, WGS84 bounds, grid size, and panel names. |
 | `finalization.json` | Final queue, stitching, visualization, and completion status. |
@@ -373,6 +395,10 @@ The shared `data/` mount must support atomic rename operations used by the queue
 | GUI has no runs | Confirm the GUI uses the same `--config`/`data_root`, and each run contains a readable `run.json`. |
 | Coverage control has no bands | Finalize the run or confirm tile/stitched `.npz` files exist and match the run manifest. |
 | Photo 3D unavailable | Add the Cesium token before `pnpm build`; restart after rebuilding. |
+| Photo 3D has black polygonal holes | Confirm the status reaches `Google Photo 3D ready` with zero failed tiles. Photo mode must hide the Cesium globe and use adaptive tile LOD; do not render World Terrain beneath Google's global mesh or force overview `maximumScreenSpaceError` below 8. |
+| Photo 3D remains on `loading` | Let the camera stop moving and read the pending/processing counters. A `degraded` status reports actual failed Google/Cesium tile requests rather than ordinary refinement. |
+| Photo 3D stutters during a demo | Warm the exact camera views first, keep the tab open, and confirm the tile-cache status is below its configured budget. Do not expect a detailed 10 km area to remain resident at every zoom level. |
+| RF overlay clips into Photo 3D | Photo mode uses a translucent analysis plane 35 m above terrain. This is a display offset only; the saved receiver height and RF values are unchanged. |
 | Browser shows an old bundle | Hard-refresh the page or add a new `reload=` query value after rebuilding. |
 | Query falls back to free space | The coordinate/band is outside completed ray-traced cells or no compatible completed run was selected. |
 
