@@ -290,9 +290,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if cesium_static.exists():
             app.mount("/cesiumStatic", StaticFiles(directory=cesium_static), name="cesium-static")
 
-        @app.get("/nvidia-logo.svg", include_in_schema=False)
-        def nvidia_logo() -> FileResponse:
-            return FileResponse(web_dist / "nvidia-logo.svg", media_type="image/svg+xml")
+        @app.get("/whiteLOGO.svg", include_in_schema=False)
+        def white_logo() -> FileResponse:
+            return FileResponse(web_dist / "whiteLOGO.svg", media_type="image/svg+xml")
 
         @app.get("/favicon.svg", include_in_schema=False)
         def favicon() -> FileResponse:

@@ -267,7 +267,7 @@ function App() {
       <div className="brand">
         <div className="technology-lockup">
               <img
-                src="/nvidia-logo.svg"
+                src="/whiteLOGO.svg"
                 alt="NVIDIA"
                 title="NVIDIA GPU acceleration; technology identification only"
               />

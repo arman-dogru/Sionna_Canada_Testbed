@@ -4,6 +4,14 @@ A reproducible outdoor cellular-propagation testbed centered on **350 Legget Dri
 
 The canonical deployment is a pinned Python 3.11 / Ubuntu 24.04 CUDA container. Work is split into independent tile/frequency jobs with one Sionna RT process per GPU or MIG device; VRAM is never assumed to pool across devices.
 
+## Operator documentation
+
+- [Simulation and GUI runbook](docs/operations.md) — copy-paste workflows for Windows/WSL, dual-GPU runs, resuming, finalizing, serving the browser GUI, Cesium ion, Docker, DGX, and troubleshooting.
+- [Configuration reference](docs/configuration.md) — every YAML section, supplied profiles, sizing math, rebuild requirements, and reproducibility rules.
+- [Receiver measurements and calibration](#receiver-measurements-and-calibration) — measurement schema and fitting workflow.
+
+Use the same `--config` file for scene creation, simulation, finalization, queries, and the GUI. Create a new run ID whenever any physical or numerical setting changes.
+
 ## Current build status
 
 The checked-out workspace contains a real public-data snapshot and completed end-to-end GPU runs:
