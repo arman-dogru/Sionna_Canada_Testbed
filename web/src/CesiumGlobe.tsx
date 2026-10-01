@@ -297,8 +297,9 @@ export default function CesiumGlobe({
       ? frequency == null ? ' · combined bands' : ` · ${frequency.toFixed(1)} MHz`
       : '';
     const tileLabel = coverage.length === 1 ? 'raster' : 'tiles';
+    const modelLabel = coverage[0]?.calibrated ? 'measurement-calibrated' : 'simulated';
     setCoverageStatus(coverage.length
-      ? `${coverage.length} simulated ${metric} ${tileLabel}${frequencyLabel} · ${resolution} m cells${photorealistic ? ` · elevated RF display +${PHOTO_COVERAGE_HEIGHT_AGL_M} m AGL` : ''}`
+      ? `${coverage.length} ${modelLabel} ${metric} ${tileLabel}${frequencyLabel} · ${resolution} m cells${photorealistic ? ` · elevated RF display +${PHOTO_COVERAGE_HEIGHT_AGL_M} m AGL` : ''}`
       : 'Simulation overlay off');
     viewer.scene.requestRender();
     return () => {

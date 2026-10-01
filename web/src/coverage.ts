@@ -13,6 +13,8 @@ export type CoverageTile = {
   values?: number[][];
   image_url?: string;
   artifact_version?: string;
+  calibrated?: boolean;
+  calibration_model_id?: string | null;
   pixel_width?: number;
   pixel_height?: number;
   heights_m?: number[][] | null;

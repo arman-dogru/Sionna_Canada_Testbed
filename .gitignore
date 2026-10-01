@@ -1,4 +1,5 @@
 .venv/
+.venv-wsl/
 __pycache__/
 *.py[cod]
 
@@ -51,7 +52,18 @@ data/browser-profile-*/
 
 # Generated screenshots and browser-test artifacts
 artifacts/
+.codex-finalizer/
+.codex-pptx-build/
+deliverables/
 
 # Runtime output
 *.log
 *.pid
+
+# Generated analysis reports and handover archives
+/outputs/
+/shared/*.zip
+
+# Local network simulation runtime
+/data/network/
+

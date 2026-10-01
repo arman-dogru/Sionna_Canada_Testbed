@@ -4,7 +4,7 @@ import csv
 import hashlib
 import json
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,7 +14,8 @@ from ottawa_rt.config import Settings
 from ottawa_rt.data.ised import load_sectors
 from ottawa_rt.geo import angular_difference_deg, band_label, bearing_deg, haversine_m
 from ottawa_rt.models import ReceiverMeasurement, SectorRecord
-from ottawa_rt.query import PredictionStore
+from ottawa_rt.simulation import frequency_bucket_mhz
+from ottawa_rt.tiling import Tile, make_tiles
 
 COLUMN_ALIASES = {
     "id": "measurement_id",
@@ -145,46 +146,121 @@ def load_measurements(path: Path) -> list[ReceiverMeasurement]:
         return [ReceiverMeasurement.model_validate_json(line) for line in handle if line.strip()]
 
 
+def _owned_tile(tiles: list[Tile], x_m: float, y_m: float) -> Tile | None:
+    """Return the deterministic core tile owning a local scene coordinate."""
+    matches = [
+        tile
+        for tile in tiles
+        if abs(x_m - tile.center_x_m) <= tile.size_m / 2
+        and abs(y_m - tile.center_y_m) <= tile.size_m / 2
+    ]
+    return min(matches, key=lambda tile: tile.tile_id) if matches else None
+
+
 def build_baseline(
     settings: Settings, measurement_path: Path, *, run_id: str | None = None
 ) -> Path:
-    store = PredictionStore(settings)
-    records = []
+    run_ids = sorted(path.parent.name for path in settings.paths.runs.glob("*/run.json"))
+    selected_run_id = run_id or (run_ids[-1] if run_ids else None)
+    if selected_run_id is None:
+        raise FileNotFoundError("No simulation run is available for calibration")
+    run_dir = settings.paths.runs / selected_run_id
+    run_path = run_dir / "run.json"
+    if not run_path.exists():
+        raise FileNotFoundError(f"Run manifest not found: {run_path}")
+    run = json.loads(run_path.read_text(encoding="utf-8"))
+    scene_xml = settings.resolve_path(run["scene_xml"])
+    metadata = json.loads((scene_xml.parent / "scene_metadata.json").read_text(encoding="utf-8"))
+    try:
+        from pyproj import Transformer
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("Calibration requires the 'geo' dependency group") from exc
+    transformer = Transformer.from_crs("EPSG:4326", metadata["target_crs"], always_xy=True)
+    origin = metadata["local_origin"]
+    tile_size_m = float(settings.raw["area"]["tile_size_m"])
+    overlap_m = float(settings.raw["area"]["overlap_m"])
+    tiles = make_tiles(float(run["width_m"]), tile_size_m, overlap_m)
+    sectors = {
+        sector.sector_id: sector
+        for sector in load_sectors(settings.paths.processed / "sectors.jsonl")
+    }
+
+    grouped: dict[Path, list[tuple[ReceiverMeasurement, Tile, float, float]]] = defaultdict(list)
+    skipped: Counter[str] = Counter()
     for measurement in load_measurements(measurement_path):
         if measurement.match_status != "matched" or measurement.rsrp_dbm is None:
+            skipped["not_matched_or_missing_rsrp"] += 1
             continue
-        result = store.query(
-            measurement.latitude,
-            measurement.longitude,
-            measurement.height_agl_m,
-            run_id=run_id,
-            frequency_mhz=measurement.frequency_mhz,
-            limit=100,
-            calibrated=False,
-        )
-        prediction = next(
-            (
-                item
-                for item in result.predictions
-                if item.sector_id == measurement.matched_sector_id
-            ),
-            None,
-        )
-        if prediction is None:
+        sector = sectors.get(measurement.matched_sector_id or "")
+        if sector is None:
+            skipped["matched_sector_missing"] += 1
             continue
-        records.append(
-            {
-                "measurement_id": measurement.measurement_id,
-                "split": measurement.split,
-                "sector_id": measurement.matched_sector_id,
-                "frequency_mhz": measurement.frequency_mhz,
-                "measured_rsrp_dbm": measurement.rsrp_dbm,
-                "predicted_rsrp_dbm": prediction.rsrp_dbm,
+        easting, northing = transformer.transform(measurement.longitude, measurement.latitude)
+        x_m = float(easting) - float(origin["easting"])
+        y_m = float(northing) - float(origin["northing"])
+        tile = _owned_tile(tiles, x_m, y_m)
+        if tile is None:
+            skipped["outside_run_output"] += 1
+            continue
+        frequency = frequency_bucket_mhz(sector.tx_frequency_mhz)
+        job_id = f"{tile.tile_id}-{frequency:.1f}MHz".replace(".", "p")
+        grouped[run_dir / "tiles" / f"{job_id}.npz"].append((measurement, tile, x_m, y_m))
+
+    records = []
+    for tile_path, items in grouped.items():
+        if not tile_path.exists():
+            skipped["tile_result_missing"] += len(items)
+            continue
+        with np.load(tile_path, allow_pickle=False) as data:
+            sector_indexes = {
+                sector_id: index for index, sector_id in enumerate(data["sector_ids"].astype(str))
             }
-        )
-    output = settings.paths.calibration / f"baseline-{measurement_path.stem}.jsonl"
+            center_x, center_y = map(float, data["tile_center"])
+            tile_size = float(data["tile_size_m"])
+            overlap = float(data["overlap_m"])
+            cell = float(data["cell_size_m"])
+            total = tile_size + 2 * overlap
+            rsrp_layers = np.asarray(data["rsrp_dbm"])
+            for measurement, _, x_m, y_m in items:
+                sector_index = sector_indexes.get(measurement.matched_sector_id or "")
+                if sector_index is None:
+                    skipped["sector_missing_from_tile"] += 1
+                    continue
+                column = int((x_m - (center_x - total / 2)) / cell)
+                row = int((y_m - (center_y - total / 2)) / cell)
+                shape = rsrp_layers.shape
+                if not (0 <= row < shape[1] and 0 <= column < shape[2]):
+                    skipped["cell_outside_tile"] += 1
+                    continue
+                predicted_rsrp = float(rsrp_layers[sector_index, row, column])
+                if not math.isfinite(predicted_rsrp):
+                    skipped["predicted_rsrp_not_finite"] += 1
+                    continue
+                records.append(
+                    {
+                        "measurement_id": measurement.measurement_id,
+                        "split": measurement.split,
+                        "sector_id": measurement.matched_sector_id,
+                        "frequency_mhz": measurement.frequency_mhz,
+                        "measured_rsrp_dbm": measurement.rsrp_dbm,
+                        "predicted_rsrp_dbm": predicted_rsrp,
+                    }
+                )
+    output = (
+        settings.paths.calibration / f"baseline-{measurement_path.stem}-{selected_run_id}.jsonl"
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("".join(json.dumps(item) + "\n" for item in records), encoding="utf-8")
+    report = {
+        "measurement_path": str(measurement_path),
+        "run_id": selected_run_id,
+        "output": str(output),
+        "record_count": len(records),
+        "tile_files_loaded": len(grouped),
+        "skipped": dict(sorted(skipped.items())),
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    output.with_suffix(".report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     return output
 
 
@@ -261,11 +337,17 @@ def calibrate(settings: Settings, baseline_path: Path) -> dict[str, object]:
             truth.append(row["measured_rsrp_dbm"] >= threshold)
             predicted.append(calibrated >= threshold)
         metrics[split] = _metrics(errors, truth, predicted)
+    report_path = baseline_path.with_suffix(".report.json")
+    baseline_report = (
+        json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
+    )
     model = {
         "schema_version": 1,
         "model_id": datetime.now(UTC).strftime("calibration-%Y%m%dT%H%M%SZ"),
         "created_at": datetime.now(UTC).isoformat(),
         "baseline": str(baseline_path),
+        "run_id": baseline_report.get("run_id"),
+        "model_version": settings.raw["project"]["model_version"],
         "method": "robust staged dB offsets with spatial holdout",
         "global_receiver_offset_db": global_offset,
         "frequency_group_offsets_db": per_band,

@@ -8,6 +8,7 @@ The canonical deployment is a pinned Python 3.11 / Ubuntu 24.04 CUDA container. 
 
 - [Simulation and GUI runbook](docs/operations.md) — copy-paste workflows for Windows/WSL, dual-GPU runs, resuming, finalizing, serving the browser GUI, Cesium ion, Docker, DGX, and troubleshooting.
 - [Configuration reference](docs/configuration.md) — every YAML section, supplied profiles, sizing math, rebuild requirements, and reproducibility rules.
+- [Windows RT run guide](RUN_RT_GUIDE_FOR_NON_TECHNICALS.md) and [Windows GUI run guide](RUN_GUI_GUIDE_FOR_NON_TECHNICALS.md) — instructions for the checkout at `D:\Projects\Sionna_RT_OTTAWA`.
 - [Receiver measurements and calibration](#receiver-measurements-and-calibration) — measurement schema and fitting workflow.
 
 Use the same `--config` file for scene creation, simulation, finalization, queries, and the GUI. Create a new run ID whenever any physical or numerical setting changes.
@@ -40,6 +41,8 @@ The 5 m demonstration uses one million samples per transmitter and tile, depth f
 - FastAPI, React/MapLibre/deck.gl partner UI, Sionna RT GUI launch configuration, local dual-GPU, DGX/MIG, and SLURM launchers.
 
 ## Environment
+
+The current Windows checkout is `D:\Projects\Sionna_RT_OTTAWA`. If `.venv` was moved with it, follow the [environment repair instructions](docs/operations.md#repair-the-windows-environment-after-moving-the-checkout) before launching the CLI or GUI. Keep `paths.data_root: data` in the project YAMLs.
 
 For source development with Python 3.11 or 3.12:
 
@@ -139,7 +142,9 @@ ottawa-rt calibrate data/measurements/receiver-readings.jsonl --run-id baseline-
 
 Matching first uses identity when present, then frequency, spatial plausibility, and sector direction. Ambiguous matches remain flagged and are excluded from fitting. Spatial blocks—not individual random rows—are assigned 60/20/20 to train, validation, and test.
 
-The first calibration stage fits a global receiver offset, effective frequency-group corrections, and regularized per-sector EIRP offsets capped at +/-6 dB. It reports MAE, RMSE, bias, P90 absolute error, and service-threshold accuracy for each split. Actual material/scattering re-tracing is measurement-dependent and is deliberately deferred until the receiver dataset exists; the raw per-sector maps and stable measurement schema avoid rebuilding the public geometry.
+The first calibration stage fits a global receiver offset, effective frequency-group corrections, and regularized per-sector EIRP offsets capped at +/-6 dB. It reports MAE, RMSE, bias, P90 absolute error, and service-threshold accuracy for each split. Physical material/scattering optimization is not implemented in this calibration stage; the raw per-sector maps and stable measurement schema support that later fitting work without rebuilding the public geometry.
+
+`calibrate` also rebuilds native-resolution per-band and combined coverage from the corrected per-sector powers, including strongest-server selection and SINR. The GUI's **Prediction model** selector compares **Measurement-calibrated** with **Original simulation**, and both map and coordinate queries use the selected model. Calibration versions invalidate raster/image caches; raw simulation artifacts are preserved. See [the full measurement workflow](docs/operations.md#14-recalculate-coverage-after-adding-receiver-measurements). Physical material/geometry optimization and re-tracing remain separate from these fitted power corrections.
 
 ## API
 

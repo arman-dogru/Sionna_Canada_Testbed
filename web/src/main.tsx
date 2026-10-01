@@ -6,6 +6,7 @@ import Map, {MapRef} from 'react-map-gl/maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import CesiumGlobe, {CesiumContentMode} from './CesiumGlobe';
 import {coverageImage, CoverageMetric, CoverageTile, metricRgba} from './coverage';
+import {createCoverageLoader} from './coverageLoader';
 import './styles.css';
 
 type FeatureCollection = {type: 'FeatureCollection'; features: Array<any>};
@@ -28,6 +29,10 @@ type RunSummary = {
   coverage_tiles: string[];
   stitched_coverage?: string[];
   has_combined_coverage: boolean;
+  calibration_available?: boolean;
+  calibration_model_id?: string | null;
+  calibration_version?: string | null;
+  coverage_version?: string;
 };
 
 const anchor = {latitude: 45.340455200216, longitude: -75.91114196736};
@@ -48,34 +53,7 @@ const initialPitch = viewParameters.has('pitch') && Number.isFinite(requestedPit
 const initialBearing = viewParameters.has('bearing') && Number.isFinite(requestedBearing)
   ? requestedBearing : -18;
 const captureMapOnly = viewParameters.get('capture') === 'map';
-const coverageRequestCache = new globalThis.Map<string, Promise<CoverageTile>>();
-
-function cachedCoverage(url: string): Promise<CoverageTile> {
-  const existing = coverageRequestCache.get(url);
-  if (existing) return existing;
-  const request = fetch(url, {cache: 'force-cache'})
-    .then(response => response.ok ? response.json() : Promise.reject(response.statusText))
-    .then(async (tile: CoverageTile) => {
-      const normalized = {
-        ...tile,
-        image_url: tile.image_url?.startsWith('/') ? `${apiBase}${tile.image_url}` : tile.image_url,
-      };
-      const imageUrl = normalized.image_url;
-      if (imageUrl) {
-        await new Promise<void>((resolve, reject) => {
-          const image = new Image();
-          image.onload = () => resolve();
-          image.onerror = () => reject(new Error(`Coverage image unavailable: ${imageUrl}`));
-          image.src = imageUrl;
-          if (image.complete && image.naturalWidth > 0) resolve();
-        });
-      }
-      return normalized;
-    });
-  coverageRequestCache.set(url, request);
-  request.catch(() => coverageRequestCache.delete(url));
-  return request;
-}
+const cachedCoverage = createCoverageLoader(apiBase);
 
 function runBounds(run: RunSummary): [[number, number], [number, number]] {
   const halfWidthM = run.width_m / 2;
@@ -112,7 +90,10 @@ function App() {
     requestedMetric && ['path_gain', 'rss', 'rsrp', 'sinr'].includes(requestedMetric) ? requestedMetric : 'rsrp'
   );
   const [coverage, setCoverage] = useState<CoverageTile[]>([]);
-  const [coverageLoad, setCoverageLoad] = useState<{loaded: number; total: number} | null>(null);
+  const [calibrated, setCalibrated] = useState(viewParameters.get('calibrated') !== 'false');
+  const [coverageLoad, setCoverageLoad] = useState<{loaded: number; total: number; building?: boolean} | null>(null);
+  const [coverageError, setCoverageError] = useState('');
+  const [coverageRetry, setCoverageRetry] = useState(0);
   const [viewMode, setViewMode] = useState<'map' | 'cesium'>(
     !captureMapOnly && (requestedView === 'cesium' || (
       requestedView !== 'map' && Boolean((import.meta.env.VITE_CESIUM_ION_TOKEN ?? '').trim())
@@ -176,10 +157,16 @@ function App() {
     selectedRunSummary.has_combined_coverage,
     selectedRunSummary.coverage_tiles.length,
     selectedRunSummary.stitched_coverage?.join('|') ?? '',
+    selectedRunSummary.coverage_version ?? '',
+    selectedRunSummary.calibration_version ?? '',
   ].join(':') : '';
+  const useCalibration = calibrated && Boolean(selectedRunSummary?.calibration_available);
 
   useEffect(() => {
-    if (!selectedRun || !coverageFrequency) { setCoverage([]); return; }
+    setCoverageError('');
+    if (!selectedRun || !coverageFrequency) {
+      setCoverage([]); setCoverageLoad(null); return;
+    }
     const run = selectedRunSummary;
     const suffix = `${Number(coverageFrequency).toFixed(1).replace('.', 'p')}MHz.npz`;
     const combined = coverageFrequency === 'combined';
@@ -196,7 +183,10 @@ function App() {
     setCoverage([]);
     setCoverageLoad(names.length ? {loaded: 0, total: names.length} : null);
     Promise.all(names.map(name => cachedCoverage(
-      `${apiBase}/v1/coverage/${selectedRun}/${name}?stride=${stride}&metric=${coverageMetric}&format=metadata&source=${source}`
+      `${apiBase}/v1/coverage/${selectedRun}/${name}?stride=${stride}&metric=${coverageMetric}&format=metadata&source=${source}&calibrated=${useCalibration}&revision=${encodeURIComponent(coverageInventoryKey)}`,
+      progress => {
+        if (!cancelled) setCoverageLoad({loaded: progress.completed_bands, total: progress.total_bands, building: true});
+      },
     ).then(tile => {
       loaded += 1;
       if (!cancelled) setCoverageLoad({loaded, total: names.length});
@@ -205,11 +195,11 @@ function App() {
       .then(items => {
         if (!cancelled) { setCoverage(items); setCoverageLoad(null); }
       })
-      .catch(() => {
-        if (!cancelled) { setCoverage([]); setCoverageLoad(null); }
+      .catch(reason => {
+        if (!cancelled) { setCoverage([]); setCoverageLoad(null); setCoverageError(`Coverage unavailable: ${reason}`); }
       });
     return () => { cancelled = true; };
-  }, [selectedRun, coverageFrequency, coverageMetric, coverageInventoryKey]);
+  }, [selectedRun, coverageFrequency, coverageMetric, coverageInventoryKey, useCalibration, coverageRetry]);
 
   useEffect(() => {
     if (viewMode !== 'map' || !selectedRunSummary || !mapRef.current) return;
@@ -246,6 +236,7 @@ function App() {
       latitude: String(next.latitude), longitude: String(next.longitude),
       height_agl_m: String(height), limit: '12'
     });
+    params.set('calibrated', String(useCalibration));
     if (operator) params.set('operator', operator);
     const queryFrequency = frequency || (
       coverageFrequency !== 'combined' ? coverageFrequency : ''
@@ -351,7 +342,8 @@ function App() {
           onClick={() => { setCesiumContent('planning'); setViewMode('cesium'); }}>Planning 3D</button>
       </div>}
       {coverageLoad && <div className="coverage-progress" role="status">
-        <i /> Loading coverage {coverageLoad.loaded}/{coverageLoad.total}
+        <i /> {coverageLoad.building ? 'Recalculating coverage' : 'Loading coverage'} {coverageLoad.loaded}/{coverageLoad.total}
+        {coverageLoad.building && ' bands'}
       </div>}
       <div className="brand">
         <span className="eyebrow">SIONNA RT</span>
@@ -394,6 +386,11 @@ function App() {
           <option value="rsrp">Highest RSRP</option>
           <option value="sinr">Highest SINR</option>
         </select></label>
+        <label className="wide">Prediction model<select value={useCalibration ? 'calibrated' : 'raw'} onChange={e => { setCalibrated(e.target.value === 'calibrated'); setPrediction(null); }}>
+          <option value="raw">Original simulation</option>
+          {selectedRunSummary?.calibration_available && <option value="calibrated">Measurement-calibrated</option>}
+        </select></label>
+        {useCalibration && coverageMetric === 'path_gain' && <p className="wide">Path gain shows the original ray-traced propagation. Measurement corrections change RSS, RSRP and SINR.</p>}
         <label>Latitude<input value={point.latitude} onChange={e => setPoint({...point, latitude: +e.target.value})}/></label>
         <label>Longitude<input value={point.longitude} onChange={e => setPoint({...point, longitude: +e.target.value})}/></label>
         <label>Height AGL (m)<input type="number" min="0" step="0.5" value={height} onChange={e => setHeight(+e.target.value)}/></label>
@@ -402,6 +399,10 @@ function App() {
       </div>
       <button onClick={() => runQuery()} disabled={loading}>{loading ? 'Computing…' : 'Query service'}</button>
       {error && <p className="error">{error}</p>}
+      {coverageError && <div className="error" role="alert">
+        <p>{coverageError}</p>
+        <button onClick={() => setCoverageRetry(value => value + 1)}>Retry coverage</button>
+      </div>}
       {prediction && <section className="results">
         <div className="result-head">
           <div><span className="eyebrow">{prediction.run_id}</span><h2>{prediction.service_available ? 'Service predicted' : 'Below threshold'}</h2></div>

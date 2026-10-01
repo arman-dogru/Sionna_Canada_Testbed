@@ -1,2 +1,7 @@
+# The Windows D: checkout is on exFAT, which cannot create package links.
+# Use a flat dependency layout and copy files from the pnpm store.
+nodeLinker: hoisted
+packageImportMethod: copy
+
 allowBuilds:
   esbuild: true

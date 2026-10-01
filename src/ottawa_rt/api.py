@@ -16,12 +16,22 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
+from ottawa_rt.calibrated_coverage import (
+    CoverageBuilds,
+    calibrated_coverage_ready,
+    calibrated_layers,
+    calibration_for_run,
+    coverage_directory,
+    coverage_version,
+    ensure_calibrated_coverage,
+    sector_bandwidths,
+)
 from ottawa_rt.config import Settings, load_settings
 from ottawa_rt.data.ised import load_sectors
 from ottawa_rt.models import ReceiverMeasurement, ServicePrediction
 from ottawa_rt.query import PredictionStore
 
-COVERAGE_RENDER_VERSION = 2
+COVERAGE_RENDER_VERSION = 3
 COVERAGE_RANGES = {
     "path_gain": (-190.0, -70.0),
     "rss": (-145.0, -35.0),
@@ -45,8 +55,7 @@ def _write_coverage_png(path: Path, values: np.ndarray, metric: str) -> None:
     upper = np.minimum(lower + 1, len(COVERAGE_COLORS) - 1)
     blend = (scaled - lower)[..., np.newaxis]
     rgb = np.floor(
-        COVERAGE_COLORS[lower] + (COVERAGE_COLORS[upper] - COVERAGE_COLORS[lower]) * blend
-        + 0.5
+        COVERAGE_COLORS[lower] + (COVERAGE_COLORS[upper] - COVERAGE_COLORS[lower]) * blend + 0.5
     ).astype(np.uint8)
     # Weak finite predictions should not black out the photogrammetry. Increase
     # opacity with signal strength while keeping no-data pixels fully clear.
@@ -87,6 +96,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
     store = PredictionStore(selected)
+    coverage_builds = CoverageBuilds()
 
     @app.get("/health")
     def health() -> dict[str, object]:
@@ -177,9 +187,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             payload["stitched_coverage"] = sorted(
                 item.name for item in (path.parent / "stitched").glob("*MHz.npz")
             )
-            payload["has_combined_coverage"] = (
-                path.parent / "stitched" / "all-bands.npz"
-            ).exists()
+            payload["has_combined_coverage"] = (path.parent / "stitched" / "all-bands.npz").exists()
+            model = calibration_for_run(selected, path.parent.name)
+            payload["calibration_available"] = model is not None
+            payload["calibration_model_id"] = model.get("model_id") if model else None
+            payload["calibration_version"] = (
+                coverage_version(selected, path.parent.name, model) if model else None
+            )
+            payload["coverage_version"] = coverage_version(selected, path.parent.name)
+            payload["calibrated_coverage_ready"] = bool(
+                model
+                and calibrated_coverage_ready(coverage_directory(selected, path.parent.name, model))
+            )
             result.append(payload)
         return result
 
@@ -252,6 +271,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         metric: Literal["path_gain", "rss", "rsrp", "sinr"] = "rsrp",
         format: Literal["json", "metadata", "png"] = "json",
         source: Literal["tiles", "stitched"] = "tiles",
+        calibrated: bool = True,
     ) -> dict[str, object] | FileResponse | JSONResponse:
         safe_run_id = Path(run_id).name
         if safe_run_id != run_id:
@@ -263,6 +283,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         path = selected.paths.runs / safe_run_id / layer_dir / safe_name
         if path.suffix != ".npz" or not path.exists():
             raise HTTPException(status_code=404, detail="Coverage tile not found")
+        model = (
+            calibration_for_run(selected, safe_run_id)
+            if calibrated and metric != "path_gain"
+            else None
+        )
+        model_version = coverage_version(selected, safe_run_id, model)
+        if model is not None and stitched:
+            if format == "metadata":
+                status = coverage_builds.status(selected, safe_run_id, model)
+                if status is not None:
+                    return JSONResponse(
+                        status,
+                        status_code=500 if status["status"] == "failed" else 202,
+                        headers={"Cache-Control": "no-store", "Retry-After": "2"},
+                    )
+            path = ensure_calibrated_coverage(selected, safe_run_id, model) / safe_name
+            if not path.exists():
+                raise HTTPException(
+                    status_code=404, detail="Calibrated coverage is incomplete for this band"
+                )
         metric_fields = {
             "path_gain": ("max_path_gain_db", "path_gain_db", "dB"),
             "rss": ("max_rss_dbm", "rss_dbm", "dBm"),
@@ -271,7 +311,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
         maximum_field, source_field, unit = metric_fields[metric]
         with np.load(path, allow_pickle=False) as data:
-            if maximum_field in data:
+            if model is not None and not stitched:
+                corrected = calibrated_layers(
+                    data,
+                    model,
+                    float(selected.raw["receiver"]["noise_figure_db"]),
+                    sector_bandwidths(selected),
+                )
+                strongest = np.max(corrected[source_field], axis=0)
+            elif maximum_field in data:
                 strongest = np.asarray(data[maximum_field], dtype=np.float32)
             else:
                 source = np.asarray(data[source_field])
@@ -325,9 +373,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 from pyproj import Transformer
 
                 origin = metadata["local_origin"]
-                to_wgs84 = Transformer.from_crs(
-                    metadata["target_crs"], "EPSG:4326", always_xy=True
-                )
+                to_wgs84 = Transformer.from_crs(metadata["target_crs"], "EPSG:4326", always_xy=True)
                 corners = [
                     to_wgs84.transform(
                         float(origin["easting"]) + center_x + dx,
@@ -360,14 +406,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 }
 
         stat = path.stat()
-        version = f"{stat.st_mtime_ns:x}-{stat.st_size:x}-r{COVERAGE_RENDER_VERSION}"
+        version = (
+            f"{model_version}-{stat.st_mtime_ns:x}-{stat.st_size:x}-r{COVERAGE_RENDER_VERSION}"
+        )
         image_url = (
             f"/v1/coverage/{quote(safe_run_id, safe='')}/{quote(safe_name, safe='')}"
-            f"?stride={stride}&metric={metric}&format=png&source={layer_dir}&v={version}"
+            f"?stride={stride}&metric={metric}&format=png&source={layer_dir}"
+            f"&calibrated={'true' if model is not None else 'false'}&v={version}"
         )
         payload.update(
             {
                 "artifact_version": version,
+                "calibrated": model is not None,
+                "calibration_model_id": model.get("model_id") if model else None,
                 "image_url": image_url,
                 "pixel_width": int(strongest.shape[1]),
                 "pixel_height": int(strongest.shape[0]),

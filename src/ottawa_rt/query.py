@@ -6,11 +6,18 @@ from datetime import UTC, datetime
 
 import numpy as np
 
+from ottawa_rt.calibrated_coverage import (
+    calibrated_layers,
+    calibration_for_run,
+    offset_db,
+    sector_bandwidths,
+)
 from ottawa_rt.config import Settings
 from ottawa_rt.data.ised import load_sectors
-from ottawa_rt.geo import band_label, free_space_path_loss_db, haversine_m, thermal_noise_dbm
+from ottawa_rt.geo import free_space_path_loss_db, haversine_m, thermal_noise_dbm
 from ottawa_rt.models import SectorPrediction, ServicePrediction
-from ottawa_rt.simulation import _local_xy, resource_blocks
+from ottawa_rt.simulation import _local_xy, frequency_bucket_mhz, resource_blocks
+from ottawa_rt.tiling import make_tiles
 
 
 def _latest_run(settings: Settings) -> str | None:
@@ -25,13 +32,7 @@ def _confidence(defaults: list[str]) -> str:
 
 
 def calibration_offset_db(model: dict[str, object], prediction: SectorPrediction) -> float:
-    band_offsets = model.get("frequency_group_offsets_db", {})
-    sector_offsets = model.get("sector_eirp_offsets_db", {})
-    return (
-        float(model.get("global_receiver_offset_db", 0.0))
-        + float(band_offsets.get(band_label(prediction.frequency_mhz), 0.0))
-        + float(sector_offsets.get(prediction.sector_id, 0.0))
-    )
+    return offset_db(model, prediction.sector_id, prediction.frequency_mhz)
 
 
 class PredictionStore:
@@ -54,6 +55,7 @@ class PredictionStore:
         height = (
             height_agl_m if height_agl_m is not None else self.settings.default_receiver_height_m
         )
+        model = calibration_for_run(self.settings, run_id) if calibrated else None
         if run_id != "free-space-preview":
             prediction = self._query_cached(
                 run_id,
@@ -63,44 +65,18 @@ class PredictionStore:
                 operator=operator,
                 frequency_mhz=frequency_mhz,
                 limit=limit,
+                calibration_model=model,
             )
             if prediction is not None:
-                return self._apply_calibration(prediction) if calibrated else prediction
-        prediction = self._query_free_space(
-            latitude, longitude, height, operator=operator, frequency_mhz=frequency_mhz, limit=limit
-        )
-        return self._apply_calibration(prediction) if calibrated else prediction
-
-    def _apply_calibration(self, result: ServicePrediction) -> ServicePrediction:
-        calibration_path = self.settings.paths.calibration / "latest.json"
-        if not calibration_path.exists():
-            return result
-        model = json.loads(calibration_path.read_text(encoding="utf-8"))
-        calibrated = []
-        for prediction in result.predictions:
-            offset = calibration_offset_db(model, prediction)
-            calibrated.append(
-                prediction.model_copy(
-                    update={
-                        "received_power_dbm": prediction.received_power_dbm + offset,
-                        "rsrp_dbm": prediction.rsrp_dbm + offset,
-                        "rssi_dbm": prediction.rssi_dbm + offset,
-                        "sinr_db": prediction.sinr_db + offset,
-                    }
-                )
-            )
-        calibrated.sort(key=lambda item: item.rsrp_dbm, reverse=True)
-        ranked = [item.model_copy(update={"rank": rank}) for rank, item in enumerate(calibrated, 1)]
-        threshold = float(self.settings.raw["simulation"]["service_threshold_rsrp_dbm"])
-        model_id = str(model.get("model_id", "calibration-unknown"))
-        return result.model_copy(
-            update={
-                "model_version": f"{result.model_version}+{model_id}",
-                "serving_sector_id": ranked[0].sector_id if ranked else None,
-                "service_available": bool(ranked and ranked[0].rsrp_dbm >= threshold),
-                "predictions": ranked,
-                "warnings": [*result.warnings, f"Applied calibration model {model_id}."],
-            }
+                return prediction
+        return self._query_free_space(
+            latitude,
+            longitude,
+            height,
+            operator=operator,
+            frequency_mhz=frequency_mhz,
+            limit=limit,
+            calibration_model=model,
         )
 
     def _query_cached(
@@ -113,6 +89,7 @@ class PredictionStore:
         operator: str | None,
         frequency_mhz: float | None,
         limit: int,
+        calibration_model: dict[str, object] | None = None,
     ) -> ServicePrediction | None:
         run_dir = self.settings.paths.runs / run_id
         manifest_path = run_dir / "run.json"
@@ -125,7 +102,31 @@ class PredictionStore:
         )
         x, y = _local_xy(metadata, latitude, longitude)
         candidates: list[SectorPrediction] = []
-        for path in (run_dir / "tiles").glob("*.npz"):
+        bandwidths = sector_bandwidths(self.settings) if calibration_model is not None else {}
+        first_path = next((run_dir / "tiles").glob("*.npz"), None)
+        if first_path is None:
+            return None
+        with np.load(first_path, allow_pickle=False) as first:
+            tile_size = float(first["tile_size_m"])
+            overlap = float(first["overlap_m"])
+        owners = [
+            tile
+            for tile in make_tiles(float(run["width_m"]), tile_size, overlap)
+            if abs(x - tile.center_x_m) <= tile.size_m / 2
+            and abs(y - tile.center_y_m) <= tile.size_m / 2
+        ]
+        if not owners:
+            return None
+        owner = min(owners, key=lambda tile: tile.tile_id)
+        # Only decompress the owning tile's bands, rather than opening every
+        # tile in the full run for each clicked coordinate.
+        pattern = f"{owner.tile_id}-*.npz"
+        if frequency_mhz is not None:
+            pattern = (
+                f"{owner.tile_id}-{frequency_bucket_mhz(frequency_mhz):.1f}MHz".replace(".", "p")
+                + ".npz"
+            )
+        for path in (run_dir / "tiles").glob(pattern):
             with np.load(path, allow_pickle=False) as data:
                 center_x, center_y = map(float, data["tile_center"])
                 tile_size = float(data["tile_size_m"])
@@ -136,9 +137,31 @@ class PredictionStore:
                 total = tile_size + 2 * overlap
                 col = int((x - (center_x - total / 2)) / cell)
                 row = int((y - (center_y - total / 2)) / cell)
-                shape = data["rsrp_dbm"].shape
+                rsrp_layers = np.asarray(data["rsrp_dbm"])
+                shape = rsrp_layers.shape
                 if not (0 <= row < shape[1] and 0 <= col < shape[2]):
                     continue
+                cell_data = {
+                    "sector_ids": data["sector_ids"],
+                    "frequencies_mhz": data["frequencies_mhz"],
+                    "rsrp_dbm": rsrp_layers[:, row : row + 1, col : col + 1],
+                    "rss_dbm": np.asarray(data["rss_dbm"])[:, row : row + 1, col : col + 1],
+                }
+                if "bandwidths_mhz" in data:
+                    cell_data["bandwidths_mhz"] = data["bandwidths_mhz"]
+                if calibration_model is not None:
+                    cell_layers = calibrated_layers(
+                        cell_data,
+                        calibration_model,
+                        float(self.settings.raw["receiver"]["noise_figure_db"]),
+                        bandwidths,
+                    )
+                else:
+                    cell_layers = cell_data
+                    cell_layers["sinr_db"] = np.asarray(data["sinr_db"])[
+                        :, row : row + 1, col : col + 1
+                    ]
+                path_gain_cell = np.asarray(data["path_gain_db"])[:, row, col]
                 for index, sector_id in enumerate(data["sector_ids"].astype(str)):
                     item_operator = str(data["operators"][index])
                     item_frequency = float(data["frequencies_mhz"][index])
@@ -147,7 +170,7 @@ class PredictionStore:
                     if frequency_mhz and abs(item_frequency - frequency_mhz) > 5:
                         continue
                     defaults = json.loads(str(data["defaults_applied"][index]))
-                    rsrp = float(data["rsrp_dbm"][index, row, col])
+                    rsrp = float(cell_layers["rsrp_dbm"][index, 0, 0])
                     if not math.isfinite(rsrp):
                         continue
                     candidates.append(
@@ -156,11 +179,11 @@ class PredictionStore:
                             operator=item_operator,
                             technology=str(data["technologies"][index]),
                             frequency_mhz=item_frequency,
-                            path_gain_db=float(data["path_gain_db"][index, row, col]),
-                            received_power_dbm=float(data["rss_dbm"][index, row, col]),
+                            path_gain_db=float(path_gain_cell[index]),
+                            received_power_dbm=float(cell_layers["rss_dbm"][index, 0, 0]),
                             rsrp_dbm=rsrp,
-                            rssi_dbm=float(data["rss_dbm"][index, row, col]),
-                            sinr_db=float(data["sinr_db"][index, row, col]),
+                            rssi_dbm=float(cell_layers["rss_dbm"][index, 0, 0]),
+                            sinr_db=float(cell_layers["sinr_db"][index, 0, 0]),
                             rank=0,
                             confidence=_confidence(defaults),
                             defaults_applied=defaults,
@@ -178,13 +201,16 @@ class PredictionStore:
             latitude=latitude,
             longitude=longitude,
             height_agl_m=height,
-            model_version=str(run["model_version"]),
+            model_version=str(run["model_version"])
+            + (f"+{calibration_model['model_id']}" if calibration_model else ""),
             run_id=run_id,
             serving_sector_id=ranked[0].sector_id if ranked else None,
             service_available=bool(ranked and ranked[0].rsrp_dbm >= threshold),
             predictions=ranked,
             generated_at=datetime.now(UTC),
-            warnings=[],
+            warnings=[f"Applied calibration model {calibration_model['model_id']}."]
+            if calibration_model
+            else [],
         )
 
     def _query_free_space(
@@ -196,6 +222,7 @@ class PredictionStore:
         operator: str | None,
         frequency_mhz: float | None,
         limit: int,
+        calibration_model: dict[str, object] | None = None,
     ) -> ServicePrediction:
         sectors = load_sectors(self.settings.paths.processed / "sectors.jsonl")
         candidates: list[SectorPrediction] = []
@@ -207,6 +234,8 @@ class PredictionStore:
             distance = haversine_m(latitude, longitude, sector.latitude, sector.longitude)
             path_gain = -free_space_path_loss_db(distance, sector.tx_frequency_mhz)
             rss = sector.eirp_dbm + path_gain
+            if calibration_model is not None:
+                rss += offset_db(calibration_model, sector.sector_id, sector.tx_frequency_mhz)
             rsrp = rss - 10 * math.log10(resource_blocks(sector.bandwidth_mhz) * 12)
             noise = thermal_noise_dbm(
                 sector.bandwidth_mhz or 20.0,
@@ -238,7 +267,8 @@ class PredictionStore:
             latitude=latitude,
             longitude=longitude,
             height_agl_m=height,
-            model_version="free-space-preview",
+            model_version="free-space-preview"
+            + (f"+{calibration_model['model_id']}" if calibration_model else ""),
             run_id="free-space-preview",
             serving_sector_id=ranked[0].sector_id if ranked else None,
             service_available=bool(ranked and ranked[0].rsrp_dbm >= threshold),
@@ -246,5 +276,10 @@ class PredictionStore:
             generated_at=datetime.now(UTC),
             warnings=[
                 "No cached Sionna tile covered this point; values are free-space preview estimates."
-            ],
+            ]
+            + (
+                [f"Applied calibration model {calibration_model['model_id']}."]
+                if calibration_model
+                else []
+            ),
         )

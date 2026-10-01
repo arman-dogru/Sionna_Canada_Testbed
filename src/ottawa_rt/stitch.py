@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ottawa_rt.calibrated_coverage import atomic_save_npz, calibrated_layers, sector_bandwidths
 from ottawa_rt.config import Settings
 from ottawa_rt.geo import bbox_from_center
 
@@ -129,7 +130,14 @@ def _seam_statistics(
     }
 
 
-def stitch_run(settings: Settings, run_id: str) -> dict[str, object]:
+def stitch_run(
+    settings: Settings,
+    run_id: str,
+    *,
+    output_dir: Path | None = None,
+    calibration_model: dict[str, object] | None = None,
+    progress=None,
+) -> dict[str, object]:
     run_dir = settings.paths.runs / run_id
     manifest_path = run_dir / "run.json"
     if not manifest_path.exists():
@@ -147,15 +155,21 @@ def stitch_run(settings: Settings, run_id: str) -> dict[str, object]:
     side = round(math.sqrt(tile_count))
     if side * side != tile_count:
         raise ValueError(f"Run {run_id} has a non-square tile layout")
-    output_dir = run_dir / "stitched"
-    output_dir.mkdir(exist_ok=True)
+    output_dir = output_dir or run_dir / "stitched"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    bandwidths = sector_bandwidths(settings) if calibration_model is not None else {}
     reports = []
     aggregate_metrics: dict[str, np.ndarray] | None = None
     aggregate_serving: np.ndarray | None = None
     aggregate_frequency: np.ndarray | None = None
     aggregate_sector_ids = [""]
     aggregate_sector_to_index = {"": 0}
-    output_bbox = bbox_from_center(*settings.anchor, float(manifest["width_m"]))
+    anchor = manifest.get(
+        "anchor_wgs84", {"latitude": settings.anchor[0], "longitude": settings.anchor[1]}
+    )
+    output_bbox = bbox_from_center(
+        float(anchor["latitude"]), float(anchor["longitude"]), float(manifest["width_m"])
+    )
     bounds_wgs84 = np.asarray(
         [output_bbox.west, output_bbox.south, output_bbox.east, output_bbox.north]
     )
@@ -181,6 +195,15 @@ def stitch_run(settings: Settings, run_id: str) -> dict[str, object]:
         full_tiles: dict[tuple[int, int], np.ndarray] = {}
         for path, row, column in paths:
             with np.load(path, allow_pickle=False) as data:
+                if calibration_model is not None:
+                    corrected = calibrated_layers(
+                        data,
+                        calibration_model,
+                        float(settings.raw["receiver"]["noise_figure_db"]),
+                        bandwidths,
+                    )
+                    corrected["max_path_gain_db"] = _maximum(data, "max_path_gain_db")
+                    data = corrected
                 metrics, serving = _compact_summary(
                     data, frequency_sector_to_index, frequency_sector_ids
                 )
@@ -194,7 +217,7 @@ def stitch_run(settings: Settings, run_id: str) -> dict[str, object]:
                 ]
             stitched_serving[row_slice, column_slice] = core_serving
         output = output_dir / f"{frequency:.1f}MHz.npz"
-        np.savez_compressed(
+        atomic_save_npz(
             output,
             **stitched_metrics,
             strongest_rsrp_dbm=stitched_metrics["max_rsrp_dbm"],
@@ -204,8 +227,11 @@ def stitch_run(settings: Settings, run_id: str) -> dict[str, object]:
             cell_size_m=np.asarray(cell),
             width_m=np.asarray(float(manifest["width_m"])),
             bounds_wgs84=bounds_wgs84,
-            anchor_wgs84=np.asarray([settings.anchor[1], settings.anchor[0]]),
+            anchor_wgs84=np.asarray([anchor["longitude"], anchor["latitude"]]),
             visualization_schema_version=np.asarray(2),
+            calibration_model_id=np.asarray(
+                str(calibration_model["model_id"]) if calibration_model else ""
+            ),
         )
         seam = _seam_statistics(full_tiles, crop)
         reports.append(
@@ -217,6 +243,8 @@ def stitch_run(settings: Settings, run_id: str) -> dict[str, object]:
                 "seam": seam,
             }
         )
+        if progress is not None:
+            progress(frequency, len(reports), len(grouped))
         if aggregate_metrics is None:
             shape = stitched_metrics["max_rsrp_dbm"].shape
             aggregate_metrics = {
@@ -256,7 +284,7 @@ def stitch_run(settings: Settings, run_id: str) -> dict[str, object]:
         assert aggregate_frequency is not None
         aggregate_rsrp = aggregate_metrics["max_rsrp_dbm"]
         aggregate_path = output_dir / "all-bands.npz"
-        np.savez_compressed(
+        atomic_save_npz(
             aggregate_path,
             **aggregate_metrics,
             strongest_rsrp_dbm=aggregate_rsrp,
@@ -266,13 +294,17 @@ def stitch_run(settings: Settings, run_id: str) -> dict[str, object]:
             cell_size_m=np.asarray(float(manifest["cell_size_m"])),
             width_m=np.asarray(float(manifest["width_m"])),
             bounds_wgs84=bounds_wgs84,
-            anchor_wgs84=np.asarray([settings.anchor[1], settings.anchor[0]]),
+            anchor_wgs84=np.asarray([anchor["longitude"], anchor["latitude"]]),
             visualization_schema_version=np.asarray(2),
+            calibration_model_id=np.asarray(
+                str(calibration_model["model_id"]) if calibration_model else ""
+            ),
         )
 
     report = {
         "schema_version": 1,
         "run_id": run_id,
+        "calibration_model_id": calibration_model.get("model_id") if calibration_model else None,
         "generated_at": datetime.now(UTC).isoformat(),
         "ownership": "non-overlapping 1 km tile cores; overlaps used only for seam diagnostics",
         "aggregate": settings.portable_path(aggregate_path) if aggregate_path else None,

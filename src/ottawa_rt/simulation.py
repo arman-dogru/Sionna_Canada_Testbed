@@ -491,6 +491,7 @@ def execute_job(settings: Settings, job: SimulationJob) -> dict[str, object]:
         operators=np.asarray([sector.operator for sector in sectors]),
         technologies=np.asarray([sector.technology for sector in sectors]),
         frequencies_mhz=np.asarray([sector.tx_frequency_mhz for sector in sectors]),
+        bandwidths_mhz=bandwidths,
         defaults_applied=np.asarray([json.dumps(sector.defaults_applied) for sector in sectors]),
         tile_center=np.asarray([tile.center_x_m, tile.center_y_m]),
         tile_size_m=np.asarray(tile.size_m),
@@ -531,8 +532,15 @@ def execute_job(settings: Settings, job: SimulationJob) -> dict[str, object]:
     }
 
 
-def worker(settings: Settings, run_id: str, *, once: bool = False) -> dict[str, int]:
+def worker(
+    settings: Settings,
+    run_id: str,
+    *,
+    once: bool = False,
+    max_jobs: int | None = None,
+) -> dict[str, int]:
     queue = FileJobQueue(settings.paths.runs / run_id / "queue")
+    processed = 0
     while True:
         claimed = queue.claim()
         if claimed is None:
@@ -543,7 +551,8 @@ def worker(settings: Settings, run_id: str, *, once: bool = False) -> dict[str, 
             queue.finish(path, metrics=metrics)
         except Exception as exc:  # noqa: BLE001  # pragma: no cover - worker boundary
             queue.finish(path, error=f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
-        if once:
+        processed += 1
+        if once or (max_jobs is not None and processed >= max_jobs):
             break
     counts = queue.counts()
     run_path = settings.paths.runs / run_id / "run.json"

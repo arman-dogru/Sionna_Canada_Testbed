@@ -10,6 +10,7 @@ from typing import Annotated
 import typer
 
 from ottawa_rt.benchmark import estimate_candidates
+from ottawa_rt.calibrated_coverage import calibration_for_run, ensure_calibrated_coverage
 from ottawa_rt.calibration import build_baseline
 from ottawa_rt.calibration import calibrate as fit_calibration
 from ottawa_rt.calibration import import_measurements as import_rows
@@ -19,6 +20,7 @@ from ottawa_rt.data.ised import normalize_ised
 from ottawa_rt.finalize import finalize_run
 from ottawa_rt.geo import bbox_from_center
 from ottawa_rt.jobs import FileJobQueue
+from ottawa_rt.measurement_snapshot import build_measurement_snapshot
 from ottawa_rt.query import PredictionStore
 from ottawa_rt.scene import build_scene as create_scene
 from ottawa_rt.simulation import prepare_run
@@ -159,6 +161,10 @@ def worker(
     run_id: str,
     config: ConfigOption = Path("config/default.yaml"),
     once: Annotated[bool, typer.Option(help="Execute at most one job")] = False,
+    max_jobs: Annotated[
+        int | None,
+        typer.Option(help="Exit after this many jobs so a supervisor can recycle the GPU process"),
+    ] = None,
     samples_per_tx: Annotated[
         int | None, typer.Option(help="Override ray samples for a smoke run")
     ] = None,
@@ -171,7 +177,9 @@ def worker(
         settings.raw["simulation"]["samples_per_tx"] = samples_per_tx
     if max_depth is not None:
         settings.raw["simulation"]["max_depth"] = max_depth
-    _print(run_worker(settings, run_id, once=once))
+    if max_jobs is not None and max_jobs < 1:
+        raise typer.BadParameter("must be at least 1", param_hint="--max-jobs")
+    _print(run_worker(settings, run_id, once=once, max_jobs=max_jobs))
 
 
 @app.command("retry-failed")
@@ -249,6 +257,20 @@ def query(
     )
 
 
+@app.command("snapshot-measurements")
+def snapshot_measurements_command(
+    input_dir: Path,
+    run_id: Annotated[str, typer.Option(help="Run whose output footprint bounds the snapshot")],
+    snapshot_name: Annotated[str, typer.Option(help="Immutable snapshot directory name")],
+    config: ConfigOption = Path("config/default.yaml"),
+) -> None:
+    _print(
+        build_measurement_snapshot(
+            _settings(config), input_dir, run_id=run_id, snapshot_name=snapshot_name
+        )
+    )
+
+
 @app.command("import-measurements")
 def import_measurements_command(
     csv_path: Path,
@@ -264,8 +286,42 @@ def calibrate(
     run_id: Annotated[str | None, typer.Option()] = None,
 ) -> None:
     settings = _settings(config)
+    typer.echo("Extracting matched measurement cells from saved simulation tiles...", err=True)
     baseline = build_baseline(settings, measurement_path, run_id=run_id)
-    _print(fit_calibration(settings, baseline))
+    model = fit_calibration(settings, baseline)
+    typer.echo(f"Fitted {model['model_id']}; rebuilding calibrated coverage...", err=True)
+    selected_run = model.get("run_id")
+    if selected_run:
+        ensure_calibrated_coverage(
+            settings,
+            str(selected_run),
+            model,
+            progress=lambda frequency, done, total: typer.echo(
+                f"Calibrated coverage {done}/{total}: {frequency:.1f} MHz", err=True
+            ),
+        )
+    _print(model)
+
+
+@app.command("rebuild-calibrated-coverage")
+def rebuild_calibrated_coverage(
+    run_id: str,
+    config: ConfigOption = Path("config/default.yaml"),
+) -> None:
+    """Recalculate cell maps with the latest fitted measurement model."""
+    settings = _settings(config)
+    model = calibration_for_run(settings, run_id)
+    if model is None:
+        raise typer.BadParameter("No compatible fitted calibration model is available for this run")
+    output = ensure_calibrated_coverage(
+        settings,
+        run_id,
+        model,
+        progress=lambda frequency, done, total: typer.echo(
+            f"Calibrated coverage {done}/{total}: {frequency:.1f} MHz", err=True
+        ),
+    )
+    _print({"run_id": run_id, "model_id": model["model_id"], "output": str(output)})
 
 
 @app.command()
