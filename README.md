@@ -8,6 +8,7 @@ The canonical deployment is a pinned Python 3.11 / Ubuntu 24.04 CUDA container. 
 
 - [Simulation and GUI runbook](docs/operations.md) — copy-paste workflows for Windows/WSL, dual-GPU runs, resuming, finalizing, serving the browser GUI, Cesium ion, Docker, DGX, and troubleshooting.
 - [Configuration reference](docs/configuration.md) — every YAML section, supplied profiles, sizing math, rebuild requirements, and reproducibility rules.
+- [UE placement and network traffic](docs/network-simulation.md) — NVIDIA tool assessment, Sionna SYS experiments, UE placement, throughput/bandwidth/latency results, and limitations.
 - [Windows RT run guide](RUN_RT_GUIDE_FOR_NON_TECHNICALS.md) and [Windows GUI run guide](RUN_GUI_GUIDE_FOR_NON_TECHNICALS.md) — instructions for the checkout at `D:\Projects\Sionna_RT_OTTAWA`.
 - [Receiver measurements and calibration](#receiver-measurements-and-calibration) — measurement schema and fitting workflow.
 
@@ -146,6 +147,17 @@ The first calibration stage fits a global receiver offset, effective frequency-g
 
 `calibrate` also rebuilds native-resolution per-band and combined coverage from the corrected per-sector powers, including strongest-server selection and SINR. The GUI's **Prediction model** selector compares **Measurement-calibrated** with **Original simulation**, and both map and coordinate queries use the selected model. Calibration versions invalidate raster/image caches; raw simulation artifacts are preserved. See [the full measurement workflow](docs/operations.md#14-recalculate-coverage-after-adding-receiver-measurements). Physical material/geometry optimization and re-tracing remain separate from these fitted power corrections.
 
+## Network traffic experiments
+
+NVIDIA Sionna SYS now adds downlink scheduling, NR link adaptation, stochastic transport-block decoding, and finite packet traffic queues. The default scenario places 24 outdoor UEs and ray-traces their CIRs on the existing Ottawa terrain/building scene, with transmitter batching for the RTX 3070. Saved results appear in the GUI's **UE performance** panel. See [the network run guide](docs/network-simulation.md) for configuration, exact UE placement, verified load/bandwidth comparisons, and the AODT assessment.
+
+```bash
+python -m pip install -e ".[network]"
+ottawa-rt simulate-network --config config/demo-4km-5m.yaml --scenario config/network-ottawa.yaml
+```
+
+The traffic model reports delivered throughput, average allocated bandwidth, packet loss/backlog and delivered-packet queue delay. Its E2E delay adds a configured core delay; this is an NR system-level abstraction rather than a complete network protocol stack.
+
 ## API
 
 - `GET /health`
@@ -156,6 +168,8 @@ The first calibration stage fits a global receiver offset, effective frequency-g
 - `GET /v1/provenance`
 - `GET /v1/calibration`
 - `GET /v1/measurements`
+- `GET /v1/network` and `GET /v1/network/{name}`
+- `GET /v1/network/{name}/ues` and `GET /v1/network/{name}/csv`
 - `GET /v1/coverage/{run_id}/{tile.npz}`
 - `GET /v1/scenes/{scene_name}/buildings`
 

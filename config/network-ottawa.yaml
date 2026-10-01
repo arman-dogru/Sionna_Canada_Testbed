@@ -1,0 +1,39 @@
+# Traffic assumptions over a completed Ottawa Sionna RT run.
+name: ottawa-mixed-traffic
+run_id: demo-4km-5m-multiband-20260918
+frequency_mhz: 3505
+calibrated: false
+channel_source: paths
+ray_samples_per_src: 100000
+ray_max_depth: 4
+duration_s: 2
+seed: 41
+device: auto
+bandwidth_mhz: 20
+numerology: 1
+data_symbols: 11
+downlink_fraction: 0.75
+bler_target: 0.1
+noise_figure_db: 7
+pf_beta: 0.95
+core_latency_ms: 5
+placement_width_m: 1000
+profiles:
+  - name: video
+    count: 8
+    arrival: cbr
+    offered_mbps: 5
+    packet_bytes: 1200
+    buffer_packets: 1000
+  - name: interactive
+    count: 8
+    arrival: poisson
+    offered_mbps: 1
+    packet_bytes: 600
+    buffer_packets: 500
+  - name: sensor
+    count: 8
+    arrival: cbr
+    offered_mbps: 0.05
+    packet_bytes: 200
+    buffer_packets: 100

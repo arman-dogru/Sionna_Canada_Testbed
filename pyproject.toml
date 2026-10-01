@@ -34,6 +34,7 @@ geo = [
   "trimesh==4.12.2",
 ]
 rt = ["sionna-rt==2.1.0"]
+network = ["sionna==2.1.0", "sionna-rt==2.1.0", "torch==2.11.0", "pyproj==3.8.0", "shapely==2.1.2", "rasterio==1.5.1"]
 calibration = ["scipy==1.18.1", "scikit-learn==1.9.1"]
 dev = ["pytest==8.4.2", "pytest-cov==6.3.0", "ruff==0.16.8"]
 all = [

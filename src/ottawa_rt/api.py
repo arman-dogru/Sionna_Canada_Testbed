@@ -98,6 +98,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     store = PredictionStore(selected)
     coverage_builds = CoverageBuilds()
 
+    @app.get("/v1/network")
+    def network_experiments(run_id: str | None = None) -> list[dict[str, object]]:
+        experiments = []
+        for path in sorted((selected.paths.data / "network").glob("*/result.json")):
+            result = json.loads(path.read_text(encoding="utf-8"))
+            if run_id and result["scenario"]["run_id"] != run_id:
+                continue
+            experiments.append(
+                {
+                    key: result[key]
+                    for key in ("name", "created_at", "backend", "device", "scenario", "summary")
+                }
+            )
+        return experiments
+
+    def network_file(name: str, filename: str) -> Path:
+        import re
+
+        from ottawa_rt.network_models import SAFE_ID
+
+        if not re.fullmatch(SAFE_ID, name):
+            raise HTTPException(status_code=400, detail="Invalid experiment name")
+        root = (selected.paths.data / "network").resolve()
+        path = (root / name / filename).resolve()
+        if not path.is_relative_to(root):
+            raise HTTPException(status_code=400, detail="Invalid experiment path")
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Network experiment not found")
+        return path
+
+    @app.get("/v1/network/{name}")
+    def network_result(name: str) -> FileResponse:
+        return FileResponse(network_file(name, "result.json"), media_type="application/json")
+
+    @app.get("/v1/network/{name}/ues")
+    def network_ues(name: str) -> FileResponse:
+        return FileResponse(network_file(name, "ues.geojson"), media_type="application/geo+json")
+
+    @app.get("/v1/network/{name}/csv")
+    def network_csv(name: str) -> FileResponse:
+        return FileResponse(
+            network_file(name, "ues.csv"), media_type="text/csv", filename="ues.csv"
+        )
+
     @app.get("/health")
     def health() -> dict[str, object]:
         return {"status": "ok", "model_version": selected.raw["project"]["model_version"]}

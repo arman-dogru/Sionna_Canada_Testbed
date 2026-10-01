@@ -1,6 +1,19 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap');
 
 :root { font-family: 'DM Sans', sans-serif; color: #e8f1ff; background: #07111f; font-synthesis: none; }
+.network-panel { margin-top:28px; padding-top:20px; border-top:1px solid #29415d; }
+.network-panel h2 { margin:8px 0 18px; }
+.network-panel p,.network-panel details { color:#91a5be; font-size:12px; line-height:1.5; }
+.network-panel a { color:#a3e635; }
+.network-stats { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.network-stats span { padding:12px; border:1px solid #29415d; border-radius:8px; }
+.network-stats small { display:block; color:#91a5be; font-size:10px; }
+.network-stats b { display:block; color:#d7f7a8; font-size:16px; margin-top:5px; }
+.network-chart { width:100%; margin:8px 0; }
+.network-ue-table { max-height:290px; overflow-y:auto; border:1px solid #29415d; border-radius:8px; }
+button.network-ue { width:100%; margin:0; border-radius:0; background:#0b1a2d; box-shadow:none; text-align:left; color:#e8f1ff; }
+button.network-ue:hover { background:#17304a; }
+button.network-refresh { margin:10px 0; padding:9px; background:#17304a; box-shadow:none; }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; min-height: 100vh; }
 main { display: grid; grid-template-columns: minmax(0, 1fr) 460px; height: 100vh; overflow: hidden; }
@@ -47,5 +60,5 @@ button:disabled { opacity: .55; cursor: wait; }
 .table { margin-top: 14px; border: 1px solid #1c334d; border-radius: 10px; overflow: hidden; }
 .row { display:grid; grid-template-columns:1.5fr .65fr .9fr .65fr; gap:8px; align-items:center; padding:11px 12px; border-top:1px solid #172b42; font:500 10px 'JetBrains Mono',monospace; }
 .row:first-child{border-top:0}.row span:first-child{overflow:hidden;text-overflow:ellipsis}.row b{display:block;font:600 11px 'DM Sans',sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.row small{display:block;color:#7188a3;margin-top:3px}.headings{color:#7188a3;background:#0a1728;text-transform:uppercase;font-size:8px;letter-spacing:.08em}
-footer { position:absolute; left:32px; right:32px; bottom:20px; color:#536b87; font-size:10px; text-align:center; }
+footer { position:static; margin-top:28px; color:#536b87; font-size:10px; text-align:center; }
 @media (max-width: 900px) { main{grid-template-columns:1fr;height:auto;overflow:visible}.map-shell{height:52vh}aside{min-height:48vh;border-left:0;border-top:1px solid #1b2f49}footer{position:static;margin-top:28px} }

@@ -54,6 +54,7 @@ type Props = {
   anchor: Coordinate;
   buildings: FeatureCollection;
   stations: FeatureCollection;
+  networkUEs: FeatureCollection;
   coverage: CoverageTile[];
   contentMode: CesiumContentMode;
   focusArea?: FocusArea;
@@ -61,7 +62,7 @@ type Props = {
 };
 
 export default function CesiumGlobe({
-  anchor, buildings, stations, coverage, contentMode, focusArea, onSelect
+  anchor, buildings, stations, networkUEs, coverage, contentMode, focusArea, onSelect
 }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Viewer | null>(null);
@@ -74,23 +75,6 @@ export default function CesiumGlobe({
     import.meta.env.VITE_CESIUM_ENABLE_PHOTOREALISTIC !== 'false';
 
   useEffect(() => { clickRef.current = onSelect; }, [onSelect]);
-
-  useEffect(() => {
-    const viewer = viewerRef.current;
-    if (!viewer || viewer.isDestroyed() || !focusArea) return;
-    const center = Cartesian3.fromDegrees(focusArea.longitude, focusArea.latitude, 0);
-    const radius = Math.max(focusArea.widthM * Math.SQRT2 / 2, 250);
-    setCameraStatus(`Centering ${focusArea.key}…`);
-    viewer.camera.flyToBoundingSphere(new BoundingSphere(center, radius), {
-      duration: 0.9,
-      offset: new HeadingPitchRange(
-        CesiumMath.toRadians(18),
-        CesiumMath.toRadians(-42),
-        Math.max(focusArea.widthM * 1.4, 1100),
-      ),
-      complete: () => setCameraStatus(`Centered on ${focusArea.key}`),
-    });
-  }, [focusArea?.key, focusArea?.latitude, focusArea?.longitude, focusArea?.widthM]);
 
   useEffect(() => {
     if (!host.current) return;
@@ -205,6 +189,42 @@ export default function CesiumGlobe({
       viewer.destroy();
     };
   }, [anchor.latitude, anchor.longitude, photorealistic, token]);
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewer.isDestroyed() || !focusArea) return;
+    const center = Cartesian3.fromDegrees(focusArea.longitude, focusArea.latitude, 0);
+    const radius = Math.max(focusArea.widthM * Math.SQRT2 / 2, 250);
+    setCameraStatus(`Centering ${focusArea.key}…`);
+    viewer.camera.flyToBoundingSphere(new BoundingSphere(center, radius), {
+      duration: 0.9,
+      offset: new HeadingPitchRange(
+        CesiumMath.toRadians(18),
+        CesiumMath.toRadians(-42),
+        Math.max(focusArea.widthM * 1.4, 1100),
+      ),
+      complete: () => setCameraStatus(`Centered on ${focusArea.key}`),
+    });
+  }, [focusArea?.key, focusArea?.latitude, focusArea?.longitude, focusArea?.widthM,
+      photorealistic, token]);
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewer.isDestroyed()) return;
+    const entities = networkUEs.features.map(feature => {
+      const ue = feature.properties;
+      return viewer.entities.add({
+        name: `${ue.ue_id} · ${ue.goodput_mbps.toFixed(2)} Mbps`,
+        position: Cartesian3.fromDegrees(ue.longitude, ue.latitude, 3),
+        point: {pixelSize: 10, color: ue.goodput_mbps > 0 ? Color.LIME : Color.SALMON,
+          outlineColor: Color.WHITE, outlineWidth: 2,
+          heightReference: HeightReference.RELATIVE_TO_TERRAIN,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY},
+      });
+    });
+    viewer.scene.requestRender();
+    return () => { if (!viewer.isDestroyed()) entities.forEach(e => viewer.entities.remove(e)); };
+  }, [networkUEs, contentMode, photorealistic, token]);
 
   useEffect(() => {
     const viewer = viewerRef.current;

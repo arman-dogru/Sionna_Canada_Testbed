@@ -45,6 +45,37 @@ def _print(payload: object) -> None:
 ConfigOption = Annotated[Path, typer.Option("--config", "-c", help="Project YAML configuration")]
 
 
+@app.command("simulate-network")
+def simulate_network(
+    scenario: Annotated[Path, typer.Option(help="UE placement and traffic scenario YAML")] = Path(
+        "config/network-ottawa.yaml"
+    ),
+    config: ConfigOption = Path("config/demo-4km-5m.yaml"),
+    overwrite: Annotated[
+        bool, typer.Option(help="Replace results for the same scenario name")
+    ] = False,
+) -> None:
+    """Run NVIDIA Sionna SYS downlink scheduling and packet traffic on an Ottawa RT scene."""
+    from ottawa_rt.network import load_scenario, run_network
+
+    try:
+        result = run_network(_settings(config), load_scenario(scenario), overwrite=overwrite)
+    except (ValueError, FileNotFoundError, FileExistsError, RuntimeError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    _print(
+        {
+            "name": result["name"],
+            "backend": result["backend"],
+            "device": result["device"],
+            "summary": result["summary"],
+            "result_path": str(
+                _settings(config).paths.data / "network" / result["name"] / "result.json"
+            ),
+        }
+    )
+
+
 @app.command("fetch-data")
 def fetch_data(
     config: ConfigOption = Path("config/default.yaml"),

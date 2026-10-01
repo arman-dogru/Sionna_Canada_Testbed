@@ -1,4 +1,5 @@
 import React, {useEffect, useMemo, useRef, useState} from 'react';
+import NetworkPanel, {NetworkResult} from './NetworkPanel';
 import {createRoot} from 'react-dom/client';
 import DeckGL from '@deck.gl/react';
 import {BitmapLayer, GeoJsonLayer, ScatterplotLayer} from '@deck.gl/layers';
@@ -106,6 +107,11 @@ function App() {
   const [selectedMeasurement, setSelectedMeasurement] = useState<any | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [networkResult, setNetworkResult] = useState<NetworkResult | null>(null);
+  const networkUEs = useMemo(() => ({type: 'FeatureCollection' as const, features:
+    (networkResult?.ues ?? []).map(ue => ({type: 'Feature', geometry: {
+      type: 'Point', coordinates: [ue.longitude, ue.latitude, ue.elevation_m]}, properties: ue}))
+  }), [networkResult]);
 
   useEffect(() => {
     fetch(`${apiBase}/v1/stations?limit=10000`)
@@ -292,6 +298,13 @@ function App() {
       getPointRadius: 35, getFillColor: [56, 189, 248, 175], getLineColor: [224, 242, 254, 220],
       onClick: info => { onDeckClick(info); return true; }
     }),
+    new GeoJsonLayer({
+      id: 'network-ues', data: networkUEs as any, pickable: true, pointRadiusMinPixels: 6,
+      getPointRadius: 12, getFillColor: feature => Number(feature.properties?.goodput_mbps) > 0
+        ? [163, 230, 53, 240] : [251, 113, 133, 240],
+      getLineColor: [255, 255, 255, 230], stroked: true, lineWidthMinPixels: 1,
+      onClick: info => { onDeckClick(info); return true; }
+    }),
     new ScatterplotLayer({
       id: 'query-point', data: [[point.longitude, point.latitude]],
       getPosition: d => d as [number, number], getRadius: 45, radiusMinPixels: 7,
@@ -314,6 +327,7 @@ function App() {
           buildings={buildings}
           stations={filtered}
           coverage={coverage}
+          networkUEs={networkUEs}
           contentMode={cesiumContent}
           focusArea={selectedRunSummary ? {
             key: selectedRunSummary.run_id,
@@ -426,6 +440,8 @@ function App() {
           </div>)}
         </div>
       </section>}
+      <NetworkPanel apiBase={apiBase} runId={selectedRun} onResult={setNetworkResult}
+        onSelect={next => { setPoint(next); runQuery(next); }}/>
       <footer>Planning estimate · Outdoor receiver · Not a service guarantee</footer>
     </aside>
   </main>;
