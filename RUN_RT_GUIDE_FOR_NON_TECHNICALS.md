@@ -4,6 +4,8 @@ This guide documents the recommended three-terminal workflow for creating, launc
 
 For the separate Aerial Omniverse Digital Twin workflow, use [the AODT beginner run guide](RUN_AODT_GUIDE_FOR_NON_TECHNICALS.md) and [AODT configuration reference](docs/aodt-configuration.md).
 
+To send simulated sensor traffic over a completed RT environment, use the [uplink and modulation experiment guide](docs/uplink-modulation-experiments.md). It includes a one-minute sensor scenario and scheduled QPSK/16-QAM/64-QAM/256-QAM comparisons.
+
 Repository root used in the examples:
 
 ```text

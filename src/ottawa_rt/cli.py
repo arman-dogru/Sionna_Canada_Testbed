@@ -108,7 +108,7 @@ def simulate_network(
         bool, typer.Option(help="Replace results for the same scenario name")
     ] = False,
 ) -> None:
-    """Run NVIDIA Sionna SYS downlink scheduling and packet traffic on an Ottawa RT scene."""
+    """Run NVIDIA Sionna SYS uplink/downlink scheduling and packet traffic on an Ottawa RT scene."""
     from ottawa_rt.network import load_scenario, run_network
 
     try:

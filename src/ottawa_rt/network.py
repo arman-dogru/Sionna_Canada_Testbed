@@ -335,7 +335,7 @@ class RadioMapSource:
 
 
 def run_network(settings: Settings, scenario: NetworkScenario, *, overwrite: bool = False) -> dict:
-    from ottawa_rt.network_backend import SionnaBackend
+    from ottawa_rt.network_backend import SionnaBackend, UplinkBackend
 
     started = time.perf_counter()
     output = settings.paths.data / "network" / scenario.name
@@ -372,11 +372,30 @@ def run_network(settings: Settings, scenario: NetworkScenario, *, overwrite: boo
     old_threads = torch.get_num_threads()
     torch.set_num_threads(1)
     try:
-        backend = SionnaBackend(scenario, serving, sinr)
+        if scenario.direction == "uplink":
+            channel_ids = channels["sector_ids"].tolist()
+            gains = channels["reciprocal_gain_db"]
+            selected_gains = np.asarray([gains[channel_ids.index(sid)] for sid in cell_ids])
+            if not cell_ids:
+                selected_gains = np.full((1, len(ues)), -np.inf)
+            backend = UplinkBackend(scenario, serving, selected_gains)
+        else:
+            backend = SionnaBackend(scenario, serving, sinr)
         rb_sum = np.zeros(len(ues))
         mcs_sum = np.zeros(len(ues))
         tbler_sum = np.zeros(len(ues))
         attempts = np.zeros(len(ues), dtype=int)
+        failures = np.zeros(len(ues), dtype=int)
+        sinr_sum = np.zeros(len(ues))
+        modulation_counts = [{} for _ in ues]
+        from sionna.phy.nr.utils import decode_mcs_index
+
+        modulation_orders, _ = decode_mcs_index(
+            torch.arange(29 if scenario.mcs_table_index == 1 else 28),
+            table_index=scenario.mcs_table_index,
+            is_pusch=scenario.direction == "uplink",
+        )
+        modulation_orders = modulation_orders.cpu().numpy()
         time_series = []
         steps = round(scenario.duration_s / scenario.slot_s)
         if steps < 1 or not math.isclose(
@@ -384,6 +403,7 @@ def run_network(settings: Settings, scenario: NetworkScenario, *, overwrite: boo
         ):
             raise ValueError("duration_s must be a positive whole number of NR slots")
         dl_slots = 0
+        ul_slots = 0
         previous_delivered = 0
         interval = max(1, round(0.1 / scenario.slot_s))
         with torch.no_grad():
@@ -396,8 +416,12 @@ def run_network(settings: Settings, scenario: NetworkScenario, *, overwrite: boo
                 downlink = math.floor((slot + 1) * scenario.downlink_fraction + 1e-9) > math.floor(
                     slot * scenario.downlink_fraction + 1e-9
                 )
-                if downlink:
-                    dl_slots += 1
+                serve_direction = downlink if scenario.direction == "downlink" else not downlink
+                if serve_direction:
+                    if scenario.direction == "downlink":
+                        dl_slots += 1
+                    else:
+                        ul_slots += 1
                     bits, rb, mcs, tbler = backend.step(
                         np.asarray([bool(q.packets) for q in queues])
                     )
@@ -409,6 +433,12 @@ def run_network(settings: Settings, scenario: NetworkScenario, *, overwrite: boo
                     mcs_sum += mcs
                     tbler_sum += tbler
                     attempts += rb > 0
+                    failures += (rb > 0) & (backend.last_feedback == 0)
+                    sinr_sum += np.where(rb > 0, backend.last_sinr_db, 0)
+                    orders = modulation_orders[mcs.astype(int)]
+                    for i in np.flatnonzero(rb > 0):
+                        label = {2: "QPSK", 4: "16QAM", 6: "64QAM", 8: "256QAM"}[int(orders[i])]
+                        modulation_counts[i][label] = modulation_counts[i].get(label, 0) + 1
                 if (slot + 1) % interval == 0 or slot == steps - 1:
                     delivered = sum(q.delivered_packets * q.packet_bits for q in queues)
                     start_slot = slot // interval * interval
@@ -435,15 +465,26 @@ def run_network(settings: Settings, scenario: NetworkScenario, *, overwrite: boo
             pending_packets=len(queue.packets),
             packet_loss_ratio=queue.dropped_packets / max(queue.offered_packets, 1),
             served_bits=queue.served_bits,
+            throughput_mbps=queue.served_bits / scenario.duration_s / 1e6,
             pending_bits=queue.pending_bits,
             allocated_bandwidth_mhz=rb_sum[i] / steps * 12 * 15e3 * 2**scenario.numerology / 1e6,
             mean_mcs=float(mcs_sum[i] / attempts[i]) if attempts[i] else None,
             mean_predicted_tbler=float(tbler_sum[i] / attempts[i]) if attempts[i] else None,
+            scheduled_transport_blocks=int(attempts[i]),
+            failed_transport_blocks=int(failures[i]),
+            observed_tbler=float(failures[i] / attempts[i]) if attempts[i] else None,
+            mean_scheduled_sinr_db=float(sinr_sum[i] / attempts[i]) if attempts[i] else None,
+            modulation_counts=modulation_counts[i],
             radio_queue_latency_ms=_percentiles(queue.latencies_ms),
             estimated_e2e_latency_ms=_percentiles(
                 [v + scenario.core_latency_ms for v in queue.latencies_ms]
             ),
         )
+        if scenario.direction == "uplink":
+            ue["sinr_db"] = ue["mean_scheduled_sinr_db"]
+            ue["mean_tx_power_mw"] = (
+                10 ** (scenario.ue_tx_power_dbm / 10) * rb_sum[i] / scenario.num_rb / steps
+            )
         # Conservation includes partially transmitted packets still in the queue.
         expected = queue.offered_packets * queue.packet_bits
         accounted = (
@@ -471,6 +512,14 @@ def run_network(settings: Settings, scenario: NetworkScenario, *, overwrite: boo
             "connected_ue_count": int((serving >= 0).sum()),
             "serving_cell_count": len(cell_ids),
             "total_goodput_mbps": float(rates.sum()),
+            "total_throughput_mbps": sum(q.served_bits for q in queues) / scenario.duration_s / 1e6,
+            "direction": scenario.direction,
+            "scheduled_transport_blocks": int(attempts.sum()),
+            "failed_transport_blocks": int(failures.sum()),
+            "observed_tbler": float(failures.sum() / attempts.sum()) if attempts.sum() else None,
+            "mean_predicted_tbler": float(tbler_sum.sum() / attempts.sum())
+            if attempts.sum()
+            else None,
             "mean_ue_goodput_mbps": float(rates.mean()),
             "p5_ue_goodput_mbps": float(np.percentile(rates, 5)),
             "jain_fairness": float(rates.sum() ** 2 / (len(rates) * (rates**2).sum()))
@@ -494,6 +543,7 @@ def run_network(settings: Settings, scenario: NetworkScenario, *, overwrite: boo
             / 1e6,
             "resource_blocks_per_cell": scenario.num_rb,
             "downlink_slots": dl_slots,
+            "uplink_slots": ul_slots,
             "wall_time_s": time.perf_counter() - started,
         },
         "assumptions": [
@@ -502,9 +552,12 @@ def run_network(settings: Settings, scenario: NetworkScenario, *, overwrite: boo
             "Configured NR carrier bandwidth with fixed total received power; not measured operator capacity.",
             "All other finite sectors in the selected 5 MHz RF group are full-load co-channel interferers.",
             "Operator filter restricts serving cells; other operators remain in interference.",
-            "NVIDIA PF scheduler, ILLA MCS table 1, and stochastic transport-block decoding; perfect SINR knowledge.",
+            (
+                f"NVIDIA PF scheduler, {scenario.link_adaptation} MCS table {scenario.mcs_table_index} "
+                f"{'PUSCH' if scenario.direction == 'uplink' else 'PDSCH'}, stochastic decoding; perfect SINR knowledge."
+            ),
             "FIFO packets with fragmentation and finite tail-drop buffers; failed blocks retry on later grants.",
-            "No HARQ combining/timing, RLC/PDCP/IP/TCP stack, uplink, mobility, handover, or carrier aggregation.",
+            "No HARQ combining/timing, RLC/PDCP/IP/TCP stack, mobility, handover, or carrier aggregation.",
             "Arrivals are batched per slot; radio/queue delay has up to one slot of timing quantization.",
             "E2E delay adds only the configured constant core_latency_ms; delivered packets only; pending packets censored.",
             "Full-buffer offered load and latency depend on the configured buffer size.",
@@ -513,6 +566,16 @@ def run_network(settings: Settings, scenario: NetworkScenario, *, overwrite: boo
         "ues": ues,
         "time_series": time_series,
     }
+    if scenario.direction == "uplink":
+        result["assumptions"][2:5] = [
+            "Same-frequency passive channel reciprocity; BS antenna pattern and feeder loss used on reception; isotropic UE antenna.",
+            "DL ISED powers choose association only. Mobile-node DL RSRP corrections are not applied to UL.",
+            "Fixed UE PSD across occupied carrier; grant N/B RBs emits ue_tx_power_dbm scaled by N/B; no 3GPP power-control loop.",
+            "In-cell orthogonal RBs; only simulated scheduled UEs in other cells interfere on shared RBs; no external UL background load.",
+            "PF uses noise-limited rate estimates. Decoding uses actual shared-RB SINR, reduced to the minimum over granted RBs.",
+            "Single-direction TDD experiment: UL serves the complement of downlink_fraction; no simultaneous DL traffic or cross-link interference.",
+            "received_power_dbm is full-carrier UL power at the BS; rsrp_dbm remains the DL association reference; sinr_db is scheduled UL mean.",
+        ]
     output.mkdir(parents=True, exist_ok=True)
     if channels is not None:
         np.savez_compressed(output / "channels.npz", **channels)
@@ -533,7 +596,12 @@ def run_network(settings: Settings, scenario: NetworkScenario, *, overwrite: boo
             "serving_sector_id",
             "sinr_db",
             "goodput_mbps",
+            "throughput_mbps",
             "allocated_bandwidth_mhz",
+            "mean_mcs",
+            "mean_scheduled_sinr_db",
+            "mean_predicted_tbler",
+            "observed_tbler",
             "offered_packets",
             "delivered_packets",
             "dropped_packets",

@@ -71,6 +71,12 @@ def test_seeded_poisson_and_full_buffer_accounting():
         {"numerology": 0, "bandwidth_mhz": 100},
         {"duration_s": float("nan")},
         {"ues": []},
+        {"link_adaptation": "fixed"},
+        {"fixed_mcs": 4},
+        {"link_adaptation": "fixed", "fixed_mcs": 28, "mcs_table_index": 2},
+        {"direction": "uplink"},  # DL radio maps are not UL channels
+        {"direction": "uplink", "channel_source": "paths", "calibrated": True},
+        {"direction": "uplink", "channel_source": "paths", "downlink_fraction": 1},
     ],
 )
 def test_scenario_rejects_invalid_input(updates):
@@ -194,3 +200,105 @@ def test_reproducible_end_to_end_saved_rf_traffic_and_api(project):
     assert client.get("/v1/network/test-network/csv").text.startswith("ue_id,profile")
     assert client.get("/v1/network/missing").status_code == 404
     assert client.get("/v1/network/bad%5Cpath").status_code == 400
+
+
+@pytest.mark.parametrize("direction", ["downlink", "uplink"])
+@pytest.mark.parametrize("table,index,order", [(1, 4, 2), (1, 12, 4), (1, 20, 6), (2, 20, 8)])
+def test_forced_mcs_attempts_undecodable_links_and_reports_modulation(
+    direction, table, index, order
+):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("sionna.sys")
+    from sionna.phy.nr.utils import decode_mcs_index
+
+    from ottawa_rt.network_backend import SionnaBackend
+
+    selected = scenario(
+        direction=direction,
+        channel_source="paths",
+        link_adaptation="fixed",
+        fixed_mcs=index,
+        mcs_table_index=table,
+    )
+    old_threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        backend = SionnaBackend(selected, np.asarray([0, 1]), np.asarray([-100, 60]))
+        bits, rb, mcs, tbler = backend.step(np.ones(2, dtype=bool))
+        assert list(rb) == [51, 51]
+        assert list(mcs) == [index, index]
+        assert bits[0] == 0 and bits[1] > 0
+        assert tbler[0] == 1 and tbler[1] == 0
+        assert list(backend.last_feedback) == [0, 1]
+        orders, _ = decode_mcs_index(
+            torch.as_tensor(mcs), table_index=table, is_pusch=direction == "uplink"
+        )
+        assert list(orders) == [order, order]
+    finally:
+        torch.set_num_threads(old_threads)
+
+
+def test_uplink_scheduled_interference_and_power_budget():
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("sionna.sys")
+    from ottawa_rt.network_backend import UplinkBackend
+
+    selected = scenario(
+        direction="uplink",
+        channel_source="paths",
+        link_adaptation="fixed",
+        fixed_mcs=4,
+        downlink_fraction=0,
+    )
+    gains = np.asarray([[-90, -90, -90], [-90, -90, -90]])
+    old_threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        backend = UplinkBackend(selected, np.asarray([0, 0, 1]), gains)
+        _, rb, _, _ = backend.step(np.ones(3, dtype=bool))
+        assert rb[:2].sum() == selected.num_rb and rb[2] == selected.num_rb
+        assert np.all(backend.last_schedule.sum(-1) <= 1)  # orthogonal in cell
+        interfered = backend.last_sinr_db[2]
+        assert -0.1 < interfered < 0  # equal-power UE from the other cell
+        assert rb.max() / selected.num_rb <= 1  # fixed PSD never exceeds UE power cap
+        backend.step(np.asarray([False, False, True]))
+        assert backend.last_sinr_db[2] > interfered + 20
+        backend.step(np.zeros(3, dtype=bool))
+        assert not backend.last_schedule.any()
+        assert list(backend.last_feedback) == [-1, -1, -1]
+    finally:
+        torch.set_num_threads(old_threads)
+
+
+def test_uplink_packet_direction_and_horizon_accounting(project, monkeypatch):
+    pytest.importorskip("sionna.sys")
+
+    def trace(source, ues):
+        for ue in ues:
+            ue.update(
+                serving_sector_id="server",
+                sinr_db=None,
+                rsrp_dbm=-85,
+                received_power_dbm=-67,
+                operator="TEST",
+                height_agl_m=1.5,
+                elevation_m=81.5,
+            )
+        return {}, {
+            "sector_ids": np.asarray(["server"]),
+            "reciprocal_gain_db": np.full((1, len(ues)), -90),
+        }
+
+    monkeypatch.setattr("ottawa_rt.network_channels.trace_ue_channels", trace)
+    selected = scenario(direction="uplink", channel_source="paths", downlink_fraction=0.75)
+    result = run_network(project, selected)
+    assert result["summary"]["uplink_slots"] == 10
+    assert result["summary"]["downlink_slots"] == 0
+    assert result["summary"]["total_throughput_mbps"] >= result["summary"]["total_goodput_mbps"]
+    for ue in result["ues"]:
+        assert ue["offered_packets"] == (
+            ue["delivered_packets"] + ue["pending_packets"] + ue["dropped_packets"]
+        )
+        assert ue["scheduled_transport_blocks"] > 0
+        assert ue["modulation_counts"]
+        assert ue["mean_tx_power_mw"] <= 10 ** (selected.ue_tx_power_dbm / 10) * 0.25

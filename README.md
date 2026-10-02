@@ -9,6 +9,7 @@ The canonical deployment is a pinned Python 3.11 / Ubuntu 24.04 CUDA container. 
 - [Simulation and GUI runbook](docs/operations.md) — copy-paste workflows for Windows/WSL, dual-GPU runs, resuming, finalizing, serving the browser GUI, Cesium ion, Docker, DGX, and troubleshooting.
 - [Configuration reference](docs/configuration.md) — every YAML section, supplied profiles, sizing math, rebuild requirements, and reproducibility rules.
 - [UE placement and network traffic](docs/network-simulation.md) — NVIDIA tool assessment, Sionna SYS experiments, UE placement, throughput/bandwidth/latency results, and limitations.
+- [Uplink and modulation experiments](docs/uplink-modulation-experiments.md) — sensor-to-BS traffic, one-minute runs, fixed/adaptive NR MCS comparisons, power/interference assumptions and scheduling.
 - [AODT beginner run guide](RUN_AODT_GUIDE_FOR_NON_TECHNICALS.md) — first experiment, UE setup, three-terminal monitoring, results, and repeatable studies.
 - [AODT configuration reference](docs/aodt-configuration.md) — native YAML fields, units, worker radio settings, and which stages to repeat after changes.
 - [AODT setup and experiment runbook](docs/aodt.md) — supported worker/client setup, native smoke runs, Ottawa scene preparation, mobile-node calibration, viewer, and troubleshooting.
@@ -154,7 +155,7 @@ The first calibration stage fits a global receiver offset, effective frequency-g
 
 ## Network traffic experiments
 
-NVIDIA Sionna SYS now adds downlink scheduling, NR link adaptation, stochastic transport-block decoding, and finite packet traffic queues. The default scenario places 24 outdoor UEs and ray-traces their CIRs on the existing Ottawa terrain/building scene, with transmitter batching for the RTX 3070. Saved results appear in the GUI's **UE performance** panel. See [the network run guide](docs/network-simulation.md) for configuration, exact UE placement, verified load/bandwidth comparisons, and the AODT assessment.
+NVIDIA Sionna SYS adds uplink/downlink scheduling, adaptive or fixed NR MCS, stochastic transport-block decoding, and finite packet traffic queues. The default remains downlink: 24 outdoor UEs with CIRs traced on the existing Ottawa terrain/building scene, with transmitter batching for the RTX 3070. Saved results appear in the GUI's **UE performance** panel. See [the network run guide](docs/network-simulation.md) and [uplink/modulation experiments](docs/uplink-modulation-experiments.md) for sensor transmission, MCS sweeps, power/interference and calibration limits.
 
 ```bash
 python -m pip install -e ".[network]"
@@ -165,7 +166,7 @@ The traffic model reports delivered throughput, average allocated bandwidth, pac
 
 For a separate AODT deployment, see the [AODT operator runbook](docs/aodt.md) and [UE/configuration and scheduling reference](docs/aodt-experiments.md). Those guides document the current 1.5.1 workflow and the conversion/calibration work needed for Ottawa; an AODT worker and Ottawa importer have not been validated in this checkout.
 
-Sionna SYS allocates resource blocks per downlink slot using proportional fair (PF) scheduling and chooses modulation/coding against a BLER target. PF uses achievable rate and throughput history. Video, interactive and sensor profiles currently differ in arrivals, demand and queue size; they do not assign application priority, guaranteed rates, 5QI policies or packet deadlines. AODT RAN mode also includes MAC resource scheduling, with documented PF/RR modes, but requires its separate supported worker deployment. See [scheduling behavior and metrics](docs/network-simulation.md#radio-resource-allocation-and-ue-priority).
+Sionna SYS allocates resource blocks in slots available to the selected UL/DL direction using proportional fair (PF) scheduling, with adaptive or fixed modulation/coding. PF uses achievable rate and throughput history. Video, interactive and sensor profiles currently differ in arrivals, demand and queue size; they do not assign application priority, guaranteed rates, 5QI policies or packet deadlines. AODT RAN mode also includes MAC resource scheduling, with documented PF/RR modes, but requires its separate supported worker deployment. See [scheduling behavior and metrics](docs/network-simulation.md#radio-resource-allocation-and-ue-priority).
 
 | Metric | Interpretation |
 | --- | --- |

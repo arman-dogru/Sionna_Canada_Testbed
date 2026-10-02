@@ -1,0 +1,22 @@
+# Paired UL/DL full-buffer benchmark; use seeds/repeated trials for inference.
+name: ottawa-modulation
+run_id: demo-4km-5m-multiband-20260918
+frequency_mhz: 3505
+channel_source: paths
+calibrated: false
+duration_s: 60
+seed: 41
+device: cpu
+bandwidth_mhz: 20
+numerology: 1
+downlink_fraction: 0.5
+ue_tx_power_dbm: 23
+noise_figure_db: 7
+placement_width_m: 1000
+profiles:
+  - name: bulk
+    count: 12
+    arrival: full_buffer
+    offered_mbps: 2  # ignored by full_buffer arrivals
+    packet_bytes: 1200
+    buffer_packets: 1000

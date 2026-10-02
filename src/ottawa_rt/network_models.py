@@ -1,4 +1,4 @@
-"""Explicit assumptions for repeatable downlink traffic experiments."""
+"""Explicit assumptions for repeatable NR traffic experiments."""
 
 from __future__ import annotations
 
@@ -44,7 +44,12 @@ class NetworkScenario(BaseModel):
     bandwidth_mhz: Literal[5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100] = 20
     numerology: Literal[0, 1] = 1
     data_symbols: int = Field(default=11, ge=1, le=14)
-    downlink_fraction: float = Field(default=0.75, gt=0, le=1)
+    direction: Literal["downlink", "uplink"] = "downlink"
+    downlink_fraction: float = Field(default=0.75, ge=0, le=1)
+    ue_tx_power_dbm: float = Field(default=23, ge=-40, le=33)
+    mcs_table_index: Literal[1, 2] = 1
+    link_adaptation: Literal["adaptive", "fixed"] = "adaptive"
+    fixed_mcs: int | None = Field(default=None, ge=0, le=28)
     bler_target: float = Field(default=0.1, gt=0, lt=1)
     noise_figure_db: float = Field(default=7, ge=0, le=30)
     pf_beta: float = Field(default=0.95, gt=0, lt=1)
@@ -57,6 +62,21 @@ class NetworkScenario(BaseModel):
 
     @model_validator(mode="after")
     def check_consistency(self) -> NetworkScenario:
+        if (self.link_adaptation == "fixed") != (self.fixed_mcs is not None):
+            raise ValueError("fixed_mcs is required only with link_adaptation: fixed")
+        if self.mcs_table_index == 2 and self.fixed_mcs == 28:
+            raise ValueError("MCS 28 is reserved in table 2; use 0 through 27")
+        if self.direction == "downlink" and self.downlink_fraction == 0:
+            raise ValueError("Downlink requires downlink_fraction > 0")
+        if self.direction == "uplink":
+            if self.downlink_fraction == 1:
+                raise ValueError("Uplink requires downlink_fraction < 1")
+            if self.channel_source != "paths":
+                raise ValueError("Uplink requires direct paths, not downlink radio maps")
+            if self.calibrated:
+                raise ValueError(
+                    "Mobile-node RSRP calibration is downlink-only; uplink must use calibrated: false"
+                )
         if self.calibration_model_path and not self.calibrated:
             raise ValueError("calibration_model_path requires calibrated: true")
         names = [p.name for p in self.profiles]
@@ -77,6 +97,10 @@ class NetworkScenario(BaseModel):
                 if sum(u.profile == profile.name for u in self.ues) != profile.count:
                     raise ValueError(f"UE count does not match profile {profile.name}")
         return self
+
+    @property
+    def mcs_category(self) -> int:
+        return 0 if self.direction == "uplink" else 1  # PUSCH / PDSCH
 
     @property
     def slot_s(self) -> float:

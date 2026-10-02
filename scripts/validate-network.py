@@ -49,9 +49,10 @@ def main():
         results.append(result)
         print(name, json.dumps(result["summary"]), flush=True)
     repeat, wide, light, overload = results[1:]
-    assert repeat["ues"] == baseline["ues"], (
-        "Identical seed/channel inputs must reproduce UE results"
-    )
+    assert len(repeat["ues"]) == len(baseline["ues"]) and all(
+        all(after[key] == before[key] for key in before)
+        for before, after in zip(baseline["ues"], repeat["ues"], strict=True)
+    ), "Identical seed/channel inputs must reproduce UE results"
     assert repeat["time_series"] == baseline["time_series"]
     assert wide["summary"]["total_goodput_mbps"] > baseline["summary"]["total_goodput_mbps"]
     assert (

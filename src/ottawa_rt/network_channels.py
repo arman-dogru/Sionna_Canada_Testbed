@@ -129,6 +129,7 @@ def trace_ue_channels(source, ues: list[dict]) -> tuple[dict, dict]:
     amplitudes = a[:, 0, :, 0, :, 0]
     gain = np.sum(np.abs(amplitudes) ** 2, axis=-1).T
     rss = np.full_like(gain, -np.inf, dtype=np.float64)
+    reciprocal_gain_db = np.full_like(rss, -np.inf)
     x = np.asarray([u["x_m"] for u in ues])
     y = np.asarray([u["y_m"] for u in ues])
     z = np.asarray([u["z_local_m"] for u in ues])
@@ -146,6 +147,7 @@ def trace_ue_channels(source, ues: list[dict]) -> tuple[dict, dict]:
             float(settings.raw["antenna_defaults"].get("front_to_back_db", 30)),
         )
         rss[i] = path_gain + sector.tx_power_dbm - sector.line_loss_db + pattern
+        reciprocal_gain_db[i] = path_gain - sector.line_loss_db + pattern
         if source.calibration is not None:
             rss[i] += offset_db(source.calibration, sector.sector_id, sector.tx_frequency_mhz)
     eligible = np.asarray(
@@ -178,6 +180,13 @@ def trace_ue_channels(source, ues: list[dict]) -> tuple[dict, dict]:
             path_count=int(valid_paths.sum()),
             propagation_delay_us=float(np.min(delays) * 1e6) if len(delays) else None,
         )
+        if scenario.direction == "uplink":
+            ue.update(
+                association_downlink_received_power_dbm=float(rss[server, i]),
+                association_downlink_rsrp_dbm=ue["rsrp_dbm"],
+                received_power_dbm=float(reciprocal_gain_db[server, i] + scenario.ue_tx_power_dbm),
+                sinr_db=None,  # actual UL SINR depends on simultaneous grants
+            )
     trace = {
         "source": "direct-ue-cir",
         "mitsuba_variant": mi.variant(),
@@ -191,11 +200,13 @@ def trace_ue_channels(source, ues: list[dict]) -> tuple[dict, dict]:
         "max_num_paths_per_src": 10000,
         "wall_time_s": time.perf_counter() - started,
         "power_reduction": "sum of SISO CIR path energies; directional pattern applied per link",
+        "uplink_reciprocity": scenario.direction == "uplink",
     }
     channel_data = {
         "a": a,
         "tau": tau,
         "rss_dbm": rss,
+        "reciprocal_gain_db": reciprocal_gain_db,
         "sector_ids": np.asarray([s.sector_id for s in sectors]),
         "ue_ids": np.asarray([u["ue_id"] for u in ues]),
         "trace_metadata": np.asarray(json.dumps(trace)),

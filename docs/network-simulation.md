@@ -1,6 +1,6 @@
 # UE placement and network traffic
 
-Checked on 2026-10-01. The implementation uses NVIDIA **Sionna RT 2.1.0 + Sionna SYS 2.1.0** on the existing Ottawa scenes. It traces channels at outdoor UE coordinates, schedules downlink resources, selects NR MCS, simulates transport-block decoding, and feeds finite packet queues. Results include UE and aggregate goodput, allocated bandwidth, queue delay, estimated end-to-end delay, packet loss, backlog, and fairness.
+Checked on 2026-10-02. The implementation uses NVIDIA **Sionna RT 2.1.0 + Sionna SYS 2.1.0** on the existing Ottawa scenes. It traces channels at outdoor UE coordinates, schedules uplink or downlink resources, selects or forces NR MCS, simulates transport-block decoding, and feeds finite packet queues. Results include throughput, goodput, allocated bandwidth, queue delay, estimated end-to-end delay, packet loss, backlog, and fairness. The original experiments below and the Legget campaign use downlink. The [uplink and modulation guide](uplink-modulation-experiments.md) adds sensor transmission, fixed-MCS sweeps and their calibration limits.
 
 ## NVIDIA tool selection
 
@@ -61,7 +61,10 @@ On another host, install the same extras and copy/rebuild the `data/` tree. The 
 | `duration_s`, `seed`, `device` | Duration, deterministic experiment seed, and SYS compute device. Duration must contain whole slots. |
 | `bandwidth_mhz`, `numerology` | Hypothetical NR carrier width and 15/30 kHz spacing (`0`/`1`). |
 | `data_symbols` | Payload OFDM symbols per slot, after assumed overhead. Default 11. |
-| `downlink_fraction` | Deterministic downlink slot fraction. Default 0.75. Other slots do not serve downlink queues. |
+| `direction` | `downlink` (default, PDSCH) or `uplink` (PUSCH). UL requires `paths` and cannot use the DL-only mobile-node calibration. |
+| `downlink_fraction` | Deterministic DL slot fraction, default 0.75. UL serves its complement. |
+| `ue_tx_power_dbm` | UL full-carrier power cap, default 23 dBm; fixed PSD scales actual power with granted RBs. |
+| `link_adaptation`, `mcs_table_index`, `fixed_mcs` | Adaptive MCS (default) or forced MCS, using NR table 1 or 2. See the modulation guide for valid indices and operating points. |
 | `bler_target`, `pf_beta` | ILLA target and PF averaging discount. |
 | `noise_figure_db` | Receiver noise figure used with configured carrier bandwidth. |
 | `core_latency_ms` | Constant added to delivered-packet radio/queue delay for an estimated E2E value. |
@@ -127,7 +130,7 @@ The API exposes:
 
 ## Radio resource allocation and UE priority
 
-The current simulator uses NVIDIA Sionna SYS `PFSchedulerSUMIMO`. In each downlink slot, only UEs with queued data, a serving cell and a useful achievable rate are eligible. Resource blocks compete within each serving cell. PF balances achievable rate against exponentially averaged delivered service; `pf_beta` controls the history window. Link adaptation selects MCS to target the configured BLER, and PHY abstraction samples transport-block decoding success. Queue service, including partial packets, updates scheduler history.
+The current simulator uses NVIDIA Sionna SYS `PFSchedulerSUMIMO`. In each slot available to the selected direction, UEs with queued data and a serving cell compete for resource blocks within that cell. Adaptive DL also excludes links with zero useful expected rate. Forced MCS and UL retain grants on undecodable links to expose failures. PF balances achievable rate against exponentially averaged delivered service; `pf_beta` controls the history window. Adaptive link selection targets the configured BLER when possible; the lowest available MCS can still exceed it. PHY abstraction samples transport-block decoding success. Queue service, including partial packets, updates scheduler history. UL's rate estimate and scheduled-interference assumptions are detailed in the modulation guide.
 
 Video, interactive and sensor names select arrivals, offered rates, packet sizes and buffers. They do **not** assign service-class priority. There are currently no priority weights, 5QI/QFI rules, guaranteed bit rates, packet deadlines, slicing quotas or admission-control policies. PF fairness also does not mean equal throughput or a latency guarantee. Compare Jain fairness within comparable traffic classes when offered demand differs.
 
@@ -165,7 +168,7 @@ The baseline resolved channels for all 24 UEs across five serving sectors. It re
 
 ## Interpret the metrics
 
-Goodput counts complete delivered application packets divided by the full simulation duration. Partial transmissions remain separately accounted for until packet completion. Average allocated MHz is occupied subcarrier width weighted by granted RBs across all slots, including non-downlink slots; it is not peak speed or an operator's subscription bandwidth.
+Goodput counts complete delivered application packets divided by the full simulation duration. Throughput counts successfully served queued bits, including partial packets. Average allocated MHz is occupied subcarrier width weighted by granted RBs across all slots, including slots unavailable to the selected direction; it is not peak speed or an operator's subscription bandwidth.
 
 Packet loss means finite-buffer tail drops. Packets still queued at the horizon are **pending**, not delivered or silently counted as losses. PHY failures retain queued bytes for a later grant. Queue accounting checks offered bits against served bits, remaining bits, and dropped bits. Delay percentiles include delivered packets only: low delay with a large backlog or low delivery ratio does not indicate good service. The configured 5 ms core delay is an assumption, not a measured core-network result.
 
@@ -173,9 +176,9 @@ Packet loss means finite-buffer tail drops. Packets still queued at the horizon 
 
 - Static outdoor SISO channels. CIR path energies are reduced to a wideband, frequency-flat gain; frequency-selective equalization, MIMO, beam management, Doppler, mobility and handovers are not modeled.
 - Directional antenna weighting matches the existing repository's per-link ISED pattern approximation. The complete per-path antenna departure-angle model remains a possible refinement.
-- The selected 5 MHz RF group is treated as co-channel, with all finite non-serving sectors at full load. Carrier widths are hypothetical experiment settings with fixed total received power, not reconstructed commercial carrier plans. Load-coupled interference is not modeled.
-- The scheduler uses NVIDIA PF with MCS/BLER-aware expected rates. ILLA selects table-1 PDSCH MCS; stochastic PHY abstraction determines decoded transport-block bits. Completely undecodable static links have no useful achievable rate.
-- Packet buffers, fragmentation, retries and arrival timing are a local traffic model. This does not implement a complete NR MAC/HARQ/RLC/PDCP/IP/TCP stack, HARQ combining/timing, or uplink. For protocol-accurate application latency, move to a full-stack simulator or channel emulator with a 5G stack.
+- DL treats finite non-serving sectors in the selected 5 MHz RF group as full-load interferers. UL instead uses scheduled simulated UEs on shared RBs. Carrier widths are hypothetical settings, not reconstructed commercial carrier plans.
+- NVIDIA PF, adaptive/fixed NR table-1/2 PDSCH/PUSCH MCS and stochastic PHY abstraction determine service. The bundled BLER curves are link-model approximations; installed Sionna uses the boundary curve for code-block sizes above the simulated table range (currently 2000 bits).
+- Packet buffers, fragmentation, retries and arrival timing are a local traffic model. This does not implement a complete NR MAC/HARQ/RLC/PDCP/IP/TCP stack or HARQ combining/timing. For protocol-accurate application latency, move to a full-stack simulator or channel emulator with a 5G stack.
 - Slot-batched arrivals quantize timing by up to one slot. E2E delay adds only the chosen constant core delay.
 - Direct path tracing uses one transmitter per call to fit the 8 GB GPU. The candidate cap is 10,000 paths per source; inspect the saved channels and increase ray budget/depth for convergence studies. Exact repeatability is verified, but physical ray-budget convergence is not claimed.
 - Saved 3.5 GHz radio maps were sparse at the sampled outdoor points: only four of 24 UE locations had finite data. Direct tracing resolved all 24, so it is the default. Missing map samples must not be interpreted as demonstrated physical coverage outages; map mode does not invent fallback powers.

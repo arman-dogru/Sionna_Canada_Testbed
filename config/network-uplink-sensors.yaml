@@ -1,0 +1,25 @@
+# Sensor-to-base-station traffic. UL calibration is unavailable from DL RSRP.
+name: ottawa-uplink-sensors-60s
+run_id: demo-4km-5m-multiband-20260918
+frequency_mhz: 3505
+direction: uplink
+channel_source: paths
+calibrated: false
+duration_s: 60
+seed: 41
+device: cpu
+bandwidth_mhz: 20
+numerology: 1
+downlink_fraction: 0.5
+ue_tx_power_dbm: 23
+noise_figure_db: 5  # assumed base-station receiver NF
+link_adaptation: adaptive
+mcs_table_index: 1
+placement_width_m: 1000
+profiles:
+  - name: sensor
+    count: 24
+    arrival: cbr
+    offered_mbps: 0.0016  # 200 bytes every second, per UE
+    packet_bytes: 200
+    buffer_packets: 1000

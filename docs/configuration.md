@@ -20,6 +20,8 @@ Create a new project profile by copying the nearest YAML and changing `project.m
 
 `config/campaign-legget-20261001.yaml` is an experiment schedule rather than a project profile. It selects project files, compatible calibration, UE counts/seeds and RF groups. See [campaign scheduling](experiment-campaigns.md). The 1 m cell size is receiver sampling; the scene builder's terrain mesh remains 10 m.
 
+UE/traffic YAMLs are separate from project profiles. `config/network-uplink-sensors.yaml` supplies a 60-second sensor UL experiment; `config/network-modulation.yaml` supplies a full-buffer UL/DL MCS benchmark. The [network configuration table](network-simulation.md#scenario-settings) and [uplink/modulation reference](uplink-modulation-experiments.md) cover direction, power, MCS, placement, scheduling and outputs. Mobile-node RSRP calibration currently applies to DL only.
+
 ## `project`
 
 ```yaml
