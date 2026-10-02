@@ -9,6 +9,8 @@ The canonical deployment is a pinned Python 3.11 / Ubuntu 24.04 CUDA container. 
 - [Simulation and GUI runbook](docs/operations.md) — copy-paste workflows for Windows/WSL, dual-GPU runs, resuming, finalizing, serving the browser GUI, Cesium ion, Docker, DGX, and troubleshooting.
 - [Configuration reference](docs/configuration.md) — every YAML section, supplied profiles, sizing math, rebuild requirements, and reproducibility rules.
 - [UE placement and network traffic](docs/network-simulation.md) — NVIDIA tool assessment, Sionna SYS experiments, UE placement, throughput/bandwidth/latency results, and limitations.
+- [AODT beginner run guide](RUN_AODT_GUIDE_FOR_NON_TECHNICALS.md) — first experiment, UE setup, three-terminal monitoring, results, and repeatable studies.
+- [AODT configuration reference](docs/aodt-configuration.md) — native YAML fields, units, worker radio settings, and which stages to repeat after changes.
 - [AODT setup and experiment runbook](docs/aodt.md) — supported worker/client setup, native smoke runs, Ottawa scene preparation, mobile-node calibration, viewer, and troubleshooting.
 - [AODT configurations and experiments](docs/aodt-experiments.md) — fixed/random/moving UEs, radio settings, experiment designs, sequential scheduling, metrics, and resource-allocation limits.
 - [Scheduling calibrated experiment campaigns](docs/experiment-campaigns.md) — density/condition sweeps, pinned mobile-node calibration, ordered execution, monitoring/resuming, and the 10 km / 1 m coverage campaign.

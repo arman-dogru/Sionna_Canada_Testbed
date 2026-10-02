@@ -2,7 +2,7 @@
 
 The simulation CLI uses one project YAML file for geography, tiling, RF behavior, defaults, source URLs, and local worker count. Keep project configurations under `config/`; `paths.data_root` is resolved from the repository root inferred from that location.
 
-This reference describes the implemented Sionna pipeline. AODT uses a separate native scenario schema and worker-wide RAN configuration; see [AODT configurations and experiments](aodt-experiments.md). The `ottawa-rt` CLI does not load AODT YAMLs.
+This reference describes the implemented Sionna pipeline. AODT uses a separate native scenario schema and worker-wide RAN configuration; see the matching [AODT configuration reference](aodt-configuration.md), [beginner run guide](../RUN_AODT_GUIDE_FOR_NON_TECHNICALS.md), and [experiment recipes](aodt-experiments.md). The `ottawa-rt` CLI does not load AODT YAMLs.
 
 ## Supplied profiles
 

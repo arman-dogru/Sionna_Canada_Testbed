@@ -2,6 +2,8 @@
 
 This guide documents the recommended three-terminal workflow for creating, launching, monitoring, and finalizing runs in the Sionna Canada Testbed repository on Windows PowerShell.
 
+For the separate Aerial Omniverse Digital Twin workflow, use [the AODT beginner run guide](RUN_AODT_GUIDE_FOR_NON_TECHNICALS.md) and [AODT configuration reference](docs/aodt-configuration.md).
+
 Repository root used in the examples:
 
 ```text

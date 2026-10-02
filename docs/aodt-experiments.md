@@ -2,6 +2,8 @@
 
 Companion to [the AODT setup runbook](aodt.md), checked on **2026-10-02** against the **1.5.1** interfaces. Examples below are operator recipes for a supported AODT installation; they have not been executed on this Windows workstation. `studies/legget/base-ran.yaml` and converted Ottawa assets are prerequisites to create, not files already supplied by this repository.
 
+Start with [the beginner run guide](../RUN_AODT_GUIDE_FOR_NON_TECHNICALS.md) for operating steps; use [the configuration reference](aodt-configuration.md) for exact fields, units, and change dependencies.
+
 ## 1. Understand the configuration files
 
 | File or artifact | Responsibility |

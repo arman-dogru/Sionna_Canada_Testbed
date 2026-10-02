@@ -4,6 +4,8 @@ Checked against NVIDIA AODT **1.5.1** documentation and the public client/worker
 
 Use [AODT experiment configuration](aodt-experiments.md) for UE examples, experiment designs, scheduling, and interpreting results. Use [the Sionna runbook](operations.md) and [our calibrated campaign guide](experiment-campaigns.md) for the existing implementation.
 
+For a first experiment, use [the beginner AODT run guide](../RUN_AODT_GUIDE_FOR_NON_TECHNICALS.md). For field meanings, units, and rerun requirements, use [the AODT configuration reference](aodt-configuration.md).
+
 ## 1. Choose the experiment backend
 
 | Question | Use |
