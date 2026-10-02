@@ -93,6 +93,8 @@ $campaignProcess.Id
 
 Only one supervisor may own a campaign. Individual UE scenarios run sequentially in separate Python processes. The RF stage launches one worker per configured GPU, recycling each after four tile jobs to release process-local GPU memory. The larger profile also traces at most four transmitters at a time within a tile, then merges their per-sector powers before computing interference. Its batch seed is the configured seed plus the first transmitter index. VRAM does not pool between the two RTX 3070s. RF failures stop downstream stages rather than producing partially calibrated comparisons.
 
+Queue claims hold an operating-system lock while moving a record and recording its owner, preventing overlapping Windows moves from claiming the same job. Record reads, writes and moves retry temporary permission errors for a bounded interval. The queue's `.claim.lock` file may remain on disk; its OS lock is released when the process exits and its presence does not indicate an active supervisor. A persistent I/O error still stops the campaign for inspection.
+
 The campaign survives closing a terminal, but the computer must stay on and awake. After a restart, inspect the lock PID and any `queue/processing` claims before resuming. Remove `supervisor.lock` only after confirming that its supervisor and children are gone; an active lock is not a stale lock. For orphan RF claims, confirm `claimed_by` PIDs are gone and move only those records back to `queue/pending`. See the [queue recovery runbook](operations.md).
 
 Use `--max-tasks 1` with `run-campaign` to execute one pending step during validation. The remaining steps stay queued; start the supervisor without that limit to continue. Resume does not automatically retry failed RF records; inspect/fix the error and use `retry-failed` with the **large project profile** before resuming.
@@ -150,3 +152,7 @@ Remove-Item Env:CUDA_VISIBLE_DEVICES
 ```
 
 The preflight writes temporary meshes/results under `.tmp/campaign-rf-smoke/` and its report to `outputs/campaign-rf-preflight.json`. It does not change completed RF tiles or measurement inputs.
+
+## Runtime recovery on October 2, 2026
+
+At 10:10 UTC, the RF supervisor stopped when GPU 1 could not read a claimed queue record. That same job was completed by the other worker, indicating a claim race; 3,973 RF jobs were complete and one later job remained orphaned. The supervisor and both workers were confirmed absent before recovery. Claim updates now use an OS lock, and queue record I/O retries transient Windows permission errors. Regression checks include four independent processes draining 60 jobs without duplicate claims, transient claim read/write failures, and preservation of an existing processing record. All 45 Python tests pass. At 10:37 UTC, the stale unfinished job was returned to pending and a single supervisor resumed both GPUs, retaining completed results and the pinned scientific settings. The runtime `recovery-20261002T103705Z.json` records the PID checks and recovered job; earlier supervisor logs were preserved alongside the new logs.
