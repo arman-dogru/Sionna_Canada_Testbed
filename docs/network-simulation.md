@@ -6,6 +6,8 @@ Checked on 2026-10-01. The implementation uses NVIDIA **Sionna RT 2.1.0 + Sionna
 
 **Aerial Omniverse Digital Twin (AODT) remains suitable for a future full RAN digital twin, but Sionna SYS is the working choice for this Windows workstation.**
 
+The separate [AODT operator runbook](aodt.md) covers worker/client installation, native runs, Ottawa scene conversion, calibration, and the viewer. Its [experiment reference](aodt-experiments.md) covers UE placement, configs, density/condition studies, scheduling, metrics, and priority limitations. These are documented deployment recipes, not a claim that AODT is running locally.
+
 The current AODT documentation is **1.5.1**. Its RAN mode combines EM ray tracing with the 5G L1/L2 transmit/receive stack and exposes per-UE BLER, throughput, and PF telemetry. [NVIDIA RAN quickstart](https://docs.nvidia.com/aerial/aodt/ran-simulations).
 
 Its current documented RAN mode is limited to 100 MHz, 273 PRBs and 30 kHz spacing, with specified antenna configurations. Our SYS experiment sweep can compare 20/40 MHz within its stated abstraction. Check the release-specific constraints before migrating the sweep to AODT. [Current RAN limitations](https://docs.nvidia.com/aerial/aodt/limitations).

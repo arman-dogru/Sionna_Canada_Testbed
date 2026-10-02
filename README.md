@@ -9,6 +9,8 @@ The canonical deployment is a pinned Python 3.11 / Ubuntu 24.04 CUDA container. 
 - [Simulation and GUI runbook](docs/operations.md) — copy-paste workflows for Windows/WSL, dual-GPU runs, resuming, finalizing, serving the browser GUI, Cesium ion, Docker, DGX, and troubleshooting.
 - [Configuration reference](docs/configuration.md) — every YAML section, supplied profiles, sizing math, rebuild requirements, and reproducibility rules.
 - [UE placement and network traffic](docs/network-simulation.md) — NVIDIA tool assessment, Sionna SYS experiments, UE placement, throughput/bandwidth/latency results, and limitations.
+- [AODT setup and experiment runbook](docs/aodt.md) — supported worker/client setup, native smoke runs, Ottawa scene preparation, mobile-node calibration, viewer, and troubleshooting.
+- [AODT configurations and experiments](docs/aodt-experiments.md) — fixed/random/moving UEs, radio settings, experiment designs, sequential scheduling, metrics, and resource-allocation limits.
 - [Scheduling calibrated experiment campaigns](docs/experiment-campaigns.md) — density/condition sweeps, pinned mobile-node calibration, ordered execution, monitoring/resuming, and the 10 km / 1 m coverage campaign.
 - [Windows RT run guide](RUN_RT_GUIDE_FOR_NON_TECHNICALS.md) and [Windows GUI run guide](RUN_GUI_GUIDE_FOR_NON_TECHNICALS.md) — instructions for the checkout at `D:\Projects\Sionna_RT_OTTAWA`.
 - [Receiver measurements and calibration](#receiver-measurements-and-calibration) — measurement schema and fitting workflow.
@@ -158,6 +160,8 @@ ottawa-rt simulate-network --config config/demo-4km-5m.yaml --scenario config/ne
 ```
 
 The traffic model reports delivered throughput, average allocated bandwidth, packet loss/backlog and delivered-packet queue delay. Its E2E delay adds a configured core delay; this is an NR system-level abstraction rather than a complete network protocol stack.
+
+For a separate AODT deployment, see the [AODT operator runbook](docs/aodt.md) and [UE/configuration and scheduling reference](docs/aodt-experiments.md). Those guides document the current 1.5.1 workflow and the conversion/calibration work needed for Ottawa; an AODT worker and Ottawa importer have not been validated in this checkout.
 
 Sionna SYS allocates resource blocks per downlink slot using proportional fair (PF) scheduling and chooses modulation/coding against a BLER target. PF uses achievable rate and throughput history. Video, interactive and sensor profiles currently differ in arrivals, demand and queue size; they do not assign application priority, guaranteed rates, 5QI policies or packet deadlines. AODT RAN mode also includes MAC resource scheduling, with documented PF/RR modes, but requires its separate supported worker deployment. See [scheduling behavior and metrics](docs/network-simulation.md#radio-resource-allocation-and-ue-priority).
 
