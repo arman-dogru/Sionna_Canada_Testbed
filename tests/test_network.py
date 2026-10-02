@@ -302,3 +302,61 @@ def test_uplink_packet_direction_and_horizon_accounting(project, monkeypatch):
         assert ue["scheduled_transport_blocks"] > 0
         assert ue["modulation_counts"]
         assert ue["mean_tx_power_mw"] <= 10 ** (selected.ue_tx_power_dbm / 10) * 0.25
+
+
+@pytest.mark.parametrize("missing_value", [-9999.0, float("nan")])
+def test_nodata_ue_reuses_pinned_rf_height_without_relocating(project, missing_value):
+    from types import SimpleNamespace
+
+    rasterio = pytest.importorskip("rasterio")
+    from rasterio.transform import from_origin
+
+    from ottawa_rt.data.provenance import sha256_file
+    from ottawa_rt.network_channels import _ue_terrain_elevations
+
+    terrain_path = project.paths.raw / "terrain" / "dtm.tif"
+    terrain_path.parent.mkdir(parents=True)
+    with rasterio.open(
+        terrain_path,
+        "w",
+        driver="GTiff",
+        height=2,
+        width=2,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=from_origin(0, 2, 1, 1),
+        nodata=-9999.0,
+    ) as terrain:
+        terrain.write(np.asarray([[91, missing_value], [93, 94]], dtype=np.float32), 1)
+    run_dir = project.paths.runs / "rf"
+    surface = run_dir / "surfaces/r000-c000.npz"
+    surface.parent.mkdir()
+    axis = np.arange(-9.5, 10, 1)
+    np.savez_compressed(surface, x_m=axis, y_m=axis, receiver_z_m=np.full((20, 20), 3.5))
+    source = SimpleNamespace(
+        settings=project,
+        metadata={"local_origin": {"elevation_m": 80}},
+        manifest={"width_m": 20, "cell_size_m": 1},
+        run_dir=run_dir,
+        sources={},
+    )
+    ues = [
+        {"ue_id": "valid", "longitude": 0.5, "latitude": 1.5, "x_m": -1.25, "y_m": 0.25},
+        {"ue_id": "hole", "longitude": 1.5, "latitude": 1.5, "x_m": 1.25, "y_m": 0.25},
+    ]
+    coordinates = [(u["x_m"], u["y_m"]) for u in ues]
+    elevations, fallbacks = _ue_terrain_elevations(source, ues)
+    assert elevations == [91, 82]
+    assert [(u["x_m"], u["y_m"]) for u in ues] == coordinates
+    assert "terrain_nodata" not in ues[0]
+    assert ues[1]["terrain_nodata"] is True
+    assert fallbacks[0]["ue_id"] == "hole"
+    assert fallbacks[0]["receiver_z_local_m"] == 3.5
+    assert source.sources[project.portable_path(surface)] == sha256_file(surface)
+    surface.unlink()
+    with pytest.raises(ValueError, match="no height or placement substitution made"):
+        _ue_terrain_elevations(source, ues)
+    np.savez_compressed(surface, x_m=axis, y_m=axis, receiver_z_m=np.full((20, 20), np.nan))
+    with pytest.raises(ValueError, match="height is invalid"):
+        _ue_terrain_elevations(source, ues)

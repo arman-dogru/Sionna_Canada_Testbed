@@ -2,6 +2,8 @@
 
 The campaign command runs a saved, dependency-ordered schedule. It first tests the existing Ottawa scene, then prepares and simulates a larger scene, fits mobile-node calibration on that new run, and finally repeats the UE experiments. This is local simulation scheduling: it is separate from the MAC scheduler that allocates radio resources inside each experiment.
 
+The October 1 campaign has completed all **116 UE scenarios** and **5,600 RF jobs**. See the [verified campaign results](legget-campaign-results.md) for density/condition comparisons, saved 1 m products, calibration errors, sparse-grid limitations and runtime recovery.
+
 ## Campaign scheduled on October 1, 2026
 
 The checked-in plan is `config/campaign-legget-20261001.yaml`. It uses the completed `measurement-validation-6km-2p5m-20260925` scene and its real mobile-node fit `calibration-20260930T165946Z`. All 116 network scenarios require calibration and pin a specific calibration file. A missing or incompatible fit stops the campaign.
@@ -50,7 +52,7 @@ The existing fit was trained on **263** usable matched readings, with **112 vali
 
 There are no usable 3.3–4.2 GHz training rows in that existing fitted baseline. The 3505 MHz scenarios therefore apply its fitted global receiver correction and any available sector correction, with `calibration.support: receiver-offset-extrapolation`. They are corrected using mobile-node data, but do not have independently demonstrated 3.5 GHz calibration accuracy. The 2120 MHz scenarios report `frequency-group-supported`; that label describes a broad group, not independent validation of every UE position or sector.
 
-The fresh 10 km fit uses the original seven input files, rather than the already-clipped 6 km snapshot. Ambiguous/unmatched rows and non-finite simulated measurement cells remain excluded. All three spatial splits must contain usable readings before the larger-scene UE stage starts. Inspect `large-calibration-report.json` for the actual sample counts and errors; its future fit is not assumed to improve accuracy automatically.
+The fresh 10 km fit uses the original seven input files, rather than the already-clipped 6 km snapshot. Ambiguous/unmatched rows and non-finite simulated measurement cells remain excluded. Its saved snapshot includes 24,775 readings, of which 160 are usable for fitting: 64 training, 45 validation and 51 test. The held-out test MAE is 19.50 dB and RMSE is 24.09 dB. There are no 3.3–4.2 GHz training readings in this fit either. Inspect `large-calibration-report.json` and the [results limitations](legget-campaign-results.md#calibration-and-physical-limits); the new fit is not assumed to improve accuracy automatically.
 
 Calibration changes received-power predictions. RSRP readings do not calibrate traffic demand, scheduler priorities, core delay, throughput or latency. Queue latency is delivered-packet latency; report it with delivery ratio, drops and pending packets.
 
@@ -135,7 +137,7 @@ calibration_model_path: data/calibration/calibration-20260930T165946Z.json
 
 That example fit is compatible with the existing 6 km scene. Use the fresh `campaign-model.json` under the larger dataset for its scene. Run `simulate-network --config ... --scenario ...` as described in the [network simulation guide](network-simulation.md). Changing the calibration source does not make an incompatible model transferable across scenes.
 
-The application also has a scheduled follow-up attached to the originating chat to inspect this campaign, recover routine issues when possible, and report completion or a failure requiring attention. Its follow-up is separate from the Python supervisor; simulation dependencies and results remain in the repository runtime artifacts.
+The scheduled follow-up attached to the originating chat inspected this campaign and recovered runtime interruptions. It was stopped after successful completion and verification. Simulation dependencies, logs and results remain in the repository runtime artifacts. A new campaign needs its own supervisor and, if desired, a new follow-up.
 
 ## Verification before the long RF stage
 

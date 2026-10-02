@@ -16,6 +16,7 @@ The canonical deployment is a pinned Python 3.11 / Ubuntu 24.04 CUDA container. 
 - [AODT setup and experiment runbook](docs/aodt.md) — supported worker/client setup, native smoke runs, Ottawa scene preparation, mobile-node calibration, viewer, and troubleshooting.
 - [AODT configurations and experiments](docs/aodt-experiments.md) — fixed/random/moving UEs, radio settings, experiment designs, sequential scheduling, metrics, and resource-allocation limits.
 - [Scheduling calibrated experiment campaigns](docs/experiment-campaigns.md) — density/condition sweeps, pinned mobile-node calibration, ordered execution, monitoring/resuming, and the 10 km / 1 m coverage campaign.
+- [Completed Legget campaign results](docs/legget-campaign-results.md) — all 116 scenarios, saved 1 m coverage, density/load comparisons, mobile-node calibration evidence and model limitations.
 - [Windows RT run guide](RUN_RT_GUIDE_FOR_NON_TECHNICALS.md) and [Windows GUI run guide](RUN_GUI_GUIDE_FOR_NON_TECHNICALS.md) — instructions for the checkout at `D:\Projects\Sionna_RT_OTTAWA`.
 - [Receiver measurements and calibration](#receiver-measurements-and-calibration) — measurement schema and fitting workflow.
 

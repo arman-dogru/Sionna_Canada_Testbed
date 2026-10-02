@@ -576,6 +576,12 @@ def run_network(settings: Settings, scenario: NetworkScenario, *, overwrite: boo
             "Single-direction TDD experiment: UL serves the complement of downlink_fraction; no simultaneous DL traffic or cross-link interference.",
             "received_power_dbm is full-carrier UL power at the BS; rsrp_dbm remains the DL association reference; sinr_db is scheduled UL mean.",
         ]
+    if trace.get("terrain_height_fallbacks"):
+        result["assumptions"].append(
+            f"{len(trace['terrain_height_fallbacks'])} UE(s) sample native DTM nodata. "
+            "Their pinned coordinates are retained using existing saved RF receiver-surface "
+            "heights; terrain_height_fallbacks records the uncertain heights and source hashes."
+        )
     output.mkdir(parents=True, exist_ok=True)
     if channels is not None:
         np.savez_compressed(output / "channels.npz", **channels)
@@ -593,6 +599,9 @@ def run_network(settings: Settings, scenario: NetworkScenario, *, overwrite: boo
             "x_m",
             "y_m",
             "height_agl_m",
+            "terrain_nodata",
+            "terrain_height_source",
+            "terrain_height_surface",
             "serving_sector_id",
             "sinr_db",
             "goodput_mbps",

@@ -10,6 +10,7 @@ from xml.etree import ElementTree
 import numpy as np
 
 from ottawa_rt.data.ised import load_sectors
+from ottawa_rt.data.provenance import sha256_file
 from ottawa_rt.geo import thermal_noise_dbm
 from ottawa_rt.simulation import (
     _local_xy,
@@ -20,10 +21,68 @@ from ottawa_rt.simulation import (
 )
 
 
-def trace_ue_channels(source, ues: list[dict]) -> tuple[dict, dict]:
-    import mitsuba as mi
+def _ue_terrain_elevations(source, ues: list[dict]) -> tuple[list[float], list[dict]]:
+    """Retain UE locations, with explicit reuse of saved RF heights at DTM holes."""
     import rasterio
     from pyproj import Transformer
+
+    settings, metadata = source.settings, source.metadata
+    origin_z = float(metadata["local_origin"]["elevation_m"])
+    height = settings.default_receiver_height_m
+    with rasterio.open(settings.paths.raw / "terrain" / "dtm.tif") as terrain:
+        transform = Transformer.from_crs("EPSG:4326", terrain.crs, always_xy=True)
+        points = [transform.transform(u["longitude"], u["latitude"]) for u in ues]
+        elevations = [float(v[0]) for v in terrain.sample(points)]
+        invalid = [
+            not math.isfinite(z) or (terrain.nodata is not None and z == terrain.nodata)
+            for z in elevations
+        ]
+    fallbacks = []
+    tile_size = float(settings.raw["area"]["tile_size_m"])
+    half = math.ceil(float(source.manifest["width_m"]) / tile_size) * tile_size / 2
+    for index, (ue, missing) in enumerate(zip(ues, invalid, strict=True)):
+        if not missing:
+            continue
+        row = math.floor((ue["y_m"] + half) / tile_size)
+        column = math.floor((ue["x_m"] + half) / tile_size)
+        surface = source.run_dir / "surfaces" / f"r{row:03d}-c{column:03d}.npz"
+        if not surface.exists():
+            raise ValueError(
+                f"UE {ue['ue_id']} terrain sample is nodata and its saved receiver surface "
+                "is unavailable; no height or placement substitution made"
+            )
+        with np.load(surface, allow_pickle=False) as saved:
+            x, y, z = saved["x_m"], saved["y_m"], saved["receiver_z_m"]
+            cell = float(source.manifest["cell_size_m"])
+            ix = math.floor((ue["x_m"] - float(x[0]) + cell / 2) / cell)
+            iy = math.floor((ue["y_m"] - float(y[0]) + cell / 2) / cell)
+            if not (0 <= ix < len(x) and 0 <= iy < len(y)):
+                raise ValueError(f"Saved receiver surface does not contain UE {ue['ue_id']}")
+            receiver_z = float(z[iy, ix])
+        if not math.isfinite(receiver_z):
+            raise ValueError(f"Saved receiver surface height is invalid for UE {ue['ue_id']}")
+        portable = settings.portable_path(surface)
+        source.sources[portable] = sha256_file(surface)
+        elevations[index] = receiver_z + origin_z - height
+        ue.update(
+            terrain_height_source="saved-receiver-surface",
+            terrain_nodata=True,
+            terrain_height_surface=portable,
+        )
+        fallbacks.append(
+            {
+                "ue_id": ue["ue_id"],
+                "reason": "native DTM sample is nodata",
+                "source": portable,
+                "receiver_z_local_m": receiver_z,
+                "limitation": "Saved RF surface height is imputed or interpolated; not a measured terrain height.",
+            }
+        )
+    return elevations, fallbacks
+
+
+def trace_ue_channels(source, ues: list[dict]) -> tuple[dict, dict]:
+    import mitsuba as mi
     from sionna.rt import PathSolver, PlanarArray, Receiver, Transmitter, load_scene
     from sionna.rt.radio_materials.itu import ITU_MATERIALS_PROPERTIES, itu_material
 
@@ -69,15 +128,7 @@ def trace_ue_channels(source, ues: list[dict]) -> tuple[dict, dict]:
         x, y = _local_xy(metadata, sector.latitude, sector.longitude)
         z = _terrain_height_local(settings, metadata, sector) + sector.antenna_height_agl_m
         tx_positions.append((x, y, z))
-    with rasterio.open(settings.paths.raw / "terrain" / "dtm.tif") as terrain:
-        transform = Transformer.from_crs("EPSG:4326", terrain.crs, always_xy=True)
-        points = [transform.transform(u["longitude"], u["latitude"]) for u in ues]
-        elevations = [float(v[0]) for v in terrain.sample(points)]
-        if any(
-            not math.isfinite(z) or (terrain.nodata is not None and z == terrain.nodata)
-            for z in elevations
-        ):
-            raise ValueError("UE terrain samples contain nodata; change UE placement")
+    elevations, terrain_fallbacks = _ue_terrain_elevations(source, ues)
     height = settings.default_receiver_height_m
     for i, (ue, elevation) in enumerate(zip(ues, elevations, strict=True)):
         z = elevation - metadata["local_origin"]["elevation_m"] + height
@@ -196,6 +247,7 @@ def trace_ue_channels(source, ues: list[dict]) -> tuple[dict, dict]:
         "flags": solver_flags,
         "sector_count": len(sectors),
         "material_frequency_fallbacks": fallbacks,
+        "terrain_height_fallbacks": terrain_fallbacks,
         "transmitters_per_trace": 1,
         "max_num_paths_per_src": 10000,
         "wall_time_s": time.perf_counter() - started,
