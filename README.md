@@ -10,6 +10,7 @@ The canonical deployment is a pinned Python 3.11 / Ubuntu 24.04 CUDA container. 
 - [Configuration reference](docs/configuration.md) — every YAML section, supplied profiles, sizing math, rebuild requirements, and reproducibility rules.
 - [UE placement and network traffic](docs/network-simulation.md) — NVIDIA tool assessment, Sionna SYS experiments, UE placement, throughput/bandwidth/latency results, and limitations.
 - [Uplink and modulation experiments](docs/uplink-modulation-experiments.md) — sensor-to-BS traffic, one-minute runs, fixed/adaptive NR MCS comparisons, power/interference assumptions and scheduling.
+- [Aerial CUDA-Accelerated RAN assessment](docs/aerial-cuda-ran.md) — pyAerial/cuPHY and cuMAC experiments, local hardware compatibility, proposed build validation, and integration with Sionna terrain and packet metrics.
 - [AODT beginner run guide](RUN_AODT_GUIDE_FOR_NON_TECHNICALS.md) — first experiment, UE setup, three-terminal monitoring, results, and repeatable studies.
 - [AODT configuration reference](docs/aodt-configuration.md) — native YAML fields, units, worker radio settings, and which stages to repeat after changes.
 - [AODT setup and experiment runbook](docs/aodt.md) — supported worker/client setup, native smoke runs, Ottawa scene preparation, mobile-node calibration, viewer, and troubleshooting.

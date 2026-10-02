@@ -6,6 +6,8 @@ Use [AODT experiment configuration](aodt-experiments.md) for UE examples, experi
 
 For a first experiment, use [the beginner AODT run guide](../RUN_AODT_GUIDE_FOR_NON_TECHNICALS.md). For field meanings, units, and rerun requirements, use [the AODT configuration reference](aodt-configuration.md).
 
+For an alternative focused on PHY and MAC research, see [Aerial CUDA-Accelerated RAN](aerial-cuda-ran.md). Its pyAerial subset is a possible experimental route on the local GPUs; it still needs Linux/container provisioning and validation, and a Sionna channel/traffic integration.
+
 ## 1. Choose the experiment backend
 
 | Question | Use |
