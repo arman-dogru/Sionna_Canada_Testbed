@@ -18,7 +18,7 @@ import yaml
 
 from ottawa_rt.calibrated_coverage import calibration_for_run, offset_db
 from ottawa_rt.config import Settings
-from ottawa_rt.geo import thermal_noise_dbm
+from ottawa_rt.geo import band_label, thermal_noise_dbm
 from ottawa_rt.network_models import NetworkScenario, TrafficProfile
 from ottawa_rt.simulation import frequency_bucket_mhz
 from ottawa_rt.tiling import make_tiles
@@ -135,7 +135,15 @@ class RadioMapSource:
         features = json.loads(buildings.read_text(encoding="utf-8"))["features"]
         self.buildings = unary_union([shape(f["geometry"]) for f in features])
         self.calibration = (
-            calibration_for_run(settings, scenario.run_id) if scenario.calibrated else None
+            calibration_for_run(
+                settings,
+                scenario.run_id,
+                model_path=settings.resolve_path(scenario.calibration_model_path)
+                if scenario.calibration_model_path
+                else None,
+            )
+            if scenario.calibrated
+            else None
         )
         if scenario.calibrated and self.calibration is None:
             raise ValueError("Requested calibration is not available for this RT run")
@@ -148,6 +156,44 @@ class RadioMapSource:
                 json.dumps(self.calibration, sort_keys=True).encode()
             ).hexdigest()
             self.sources["calibration_model_sha256"] = digest
+
+    def calibration_evidence(self) -> dict[str, object] | None:
+        if self.calibration is None:
+            return None
+        model = self.calibration
+        counts = model.get("training_frequency_group_counts", {})
+        baseline = model.get("baseline")
+        if not counts and baseline:
+            settings_path = self.settings.resolve_path(str(baseline))
+            if settings_path.exists():
+                from collections import Counter
+
+                counts = dict(
+                    Counter(
+                        band_label(float(row["frequency_mhz"]))
+                        for line in settings_path.read_text(encoding="utf-8").splitlines()
+                        if line.strip() and (row := json.loads(line)).get("split") == "train"
+                    )
+                )
+        group = band_label(self.scenario.frequency_mhz)
+        support = int(counts.get(group, 0))
+        return {
+            "model_id": model["model_id"],
+            "source_run_id": model.get("run_id"),
+            "model_sha256": self.sources["calibration_model_sha256"],
+            "method": model.get("method"),
+            "metrics": model.get("metrics"),
+            "measurement_provenance": model.get("measurement_provenance"),
+            "training_frequency_group_counts": counts,
+            "scenario_frequency_group": group,
+            "scenario_group_training_count": support,
+            "support": "frequency-group-supported" if support else "receiver-offset-extrapolation",
+            "limitation": (
+                "Power correction fitted to mobile-node RSRP; traffic, throughput and latency "
+                "are not calibrated by those RF measurements. Group support does not prove "
+                "each sector or UE location is independently validated."
+            ),
+        }
 
     def coordinate(self, x: float, y: float) -> tuple[float, float]:
         origin = self.metadata["local_origin"]
@@ -417,6 +463,7 @@ def run_network(settings: Settings, scenario: NetworkScenario, *, overwrite: boo
         "device": backend.device,
         "scenario": scenario.model_dump(),
         "channel_trace": trace,
+        "calibration": source.calibration_evidence(),
         "versions": {p: version(p) for p in ("sionna", "sionna-rt", "torch", "numpy")},
         "source_sha256": source.sources,
         "summary": {

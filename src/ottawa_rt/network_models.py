@@ -34,6 +34,7 @@ class NetworkScenario(BaseModel):
     frequency_mhz: float = Field(gt=0)
     operator: str | None = None
     calibrated: bool = False
+    calibration_model_path: str | None = None
     channel_source: Literal["paths", "radio_map"] = "paths"
     ray_samples_per_src: int = Field(default=100000, ge=1000, le=10000000)
     ray_max_depth: int = Field(default=4, ge=0, le=8)
@@ -56,6 +57,8 @@ class NetworkScenario(BaseModel):
 
     @model_validator(mode="after")
     def check_consistency(self) -> NetworkScenario:
+        if self.calibration_model_path and not self.calibrated:
+            raise ValueError("calibration_model_path requires calibrated: true")
         names = [p.name for p in self.profiles]
         if len(set(names)) != len(names):
             raise ValueError("Traffic profile names must be unique")

@@ -9,6 +9,7 @@ The canonical deployment is a pinned Python 3.11 / Ubuntu 24.04 CUDA container. 
 - [Simulation and GUI runbook](docs/operations.md) — copy-paste workflows for Windows/WSL, dual-GPU runs, resuming, finalizing, serving the browser GUI, Cesium ion, Docker, DGX, and troubleshooting.
 - [Configuration reference](docs/configuration.md) — every YAML section, supplied profiles, sizing math, rebuild requirements, and reproducibility rules.
 - [UE placement and network traffic](docs/network-simulation.md) — NVIDIA tool assessment, Sionna SYS experiments, UE placement, throughput/bandwidth/latency results, and limitations.
+- [Scheduling calibrated experiment campaigns](docs/experiment-campaigns.md) — density/condition sweeps, pinned mobile-node calibration, ordered execution, monitoring/resuming, and the 10 km / 1 m coverage campaign.
 - [Windows RT run guide](RUN_RT_GUIDE_FOR_NON_TECHNICALS.md) and [Windows GUI run guide](RUN_GUI_GUIDE_FOR_NON_TECHNICALS.md) — instructions for the checkout at `D:\Projects\Sionna_RT_OTTAWA`.
 - [Receiver measurements and calibration](#receiver-measurements-and-calibration) — measurement schema and fitting workflow.
 
@@ -157,6 +158,29 @@ ottawa-rt simulate-network --config config/demo-4km-5m.yaml --scenario config/ne
 ```
 
 The traffic model reports delivered throughput, average allocated bandwidth, packet loss/backlog and delivered-packet queue delay. Its E2E delay adds a configured core delay; this is an NR system-level abstraction rather than a complete network protocol stack.
+
+Sionna SYS allocates resource blocks per downlink slot using proportional fair (PF) scheduling and chooses modulation/coding against a BLER target. PF uses achievable rate and throughput history. Video, interactive and sensor profiles currently differ in arrivals, demand and queue size; they do not assign application priority, guaranteed rates, 5QI policies or packet deadlines. AODT RAN mode also includes MAC resource scheduling, with documented PF/RR modes, but requires its separate supported worker deployment. See [scheduling behavior and metrics](docs/network-simulation.md#radio-resource-allocation-and-ue-priority).
+
+| Metric | Interpretation |
+| --- | --- |
+| UE/network goodput | Delivered packet payload Mbps, mean and lower fifth percentile UE performance, and a time series. |
+| Bandwidth | Configured carrier, occupied NR bandwidth, resource-block budget and average UE allocation. |
+| Delay | Delivered-packet radio/queue mean, P50, P95 and P99; estimated E2E adds configured core delay. |
+| Delivery and congestion | Delivered fraction, finite-buffer drops, pending packets and queue evolution. |
+| Radio and scheduling | RSS, estimated RSRP, SINR, serving sector, MCS, predicted transport-block error rate and fairness. |
+| Calibration evidence | Pinned fit ID/hash, held-out errors and frequency-group training support; no throughput or latency calibration from RSRP alone. |
+
+### Scheduled mobile-node-calibrated campaign
+
+`config/campaign-legget-20261001.yaml` queues **116 UE scenarios** with 12/24/60/120 UEs, two seeds and different load, bandwidth, receiver-noise and downlink-airtime conditions. It first runs 56 cases on the measured 6 km scene, then prepares a **10 km × 10 km square around 350 Legget Drive with a 1 m receiver grid**, fits a fresh model from the original mobile-node CSVs, and runs 60 cases on the new scene. The larger dataset is isolated under `data/campaigns/`; its RF queue has 5,600 tile/frequency jobs across 14 selected groups.
+
+```powershell
+.\.venv\Scripts\python.exe -m ottawa_rt.cli prepare-campaign
+.\.venv\Scripts\python.exe -m ottawa_rt.cli run-campaign
+.\.venv\Scripts\python.exe -m ottawa_rt.cli campaign-status
+```
+
+Do not launch a second supervisor if one is already running. The [campaign guide](docs/experiment-campaigns.md) covers background startup, the full matrix, dependencies, paths, recovery and GUI access. The 1 m setting describes receiver/coverage sampling; the existing terrain-mesh convention remains 10 m. The current 3.5 GHz fit applies mobile-node receiver corrections through extrapolation, while the 2120 MHz comparisons have group-level training support. All new scenarios require calibration; unsupported bands and held-out errors stay visible in results.
 
 ## API
 

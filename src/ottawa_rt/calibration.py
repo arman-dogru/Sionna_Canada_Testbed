@@ -12,6 +12,7 @@ import numpy as np
 
 from ottawa_rt.config import Settings
 from ottawa_rt.data.ised import load_sectors
+from ottawa_rt.data.provenance import sha256_file
 from ottawa_rt.geo import angular_difference_deg, band_label, bearing_deg, haversine_m
 from ottawa_rt.models import ReceiverMeasurement, SectorRecord
 from ottawa_rt.simulation import frequency_bucket_mhz
@@ -354,7 +355,20 @@ def calibrate(settings: Settings, baseline_path: Path) -> dict[str, object]:
         "sector_eirp_offsets_db": per_sector,
         "sector_offset_bounds_db": [-6.0, 6.0],
         "metrics": metrics,
+        "training_frequency_group_counts": dict(
+            Counter(band_label(float(row["frequency_mhz"])) for row in train)
+        ),
+        "training_sector_counts": dict(Counter(row["sector_id"] for row in train)),
+        "baseline_sha256": sha256_file(baseline_path),
     }
+    measurement_value = baseline_report.get("measurement_path")
+    if measurement_value:
+        measurement_file = settings.resolve_path(str(measurement_value))
+        if measurement_file.exists():
+            model["measurement_provenance"] = {
+                "path": settings.portable_path(measurement_file),
+                "sha256": sha256_file(measurement_file),
+            }
     output = settings.paths.calibration / f"{model['model_id']}.json"
     output.write_text(json.dumps(model, indent=2), encoding="utf-8")
     (settings.paths.calibration / "latest.json").write_text(

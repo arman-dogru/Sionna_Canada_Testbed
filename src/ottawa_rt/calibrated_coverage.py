@@ -26,9 +26,11 @@ def offset_db(model: dict[str, object], sector_id: str, frequency_mhz: float) ->
     )
 
 
-def calibration_for_run(settings: Settings, run_id: str) -> dict[str, object] | None:
+def calibration_for_run(
+    settings: Settings, run_id: str, *, model_path: Path | None = None
+) -> dict[str, object] | None:
     """Use a fitted model only with the same scientific model and scene."""
-    path = settings.paths.calibration / "latest.json"
+    path = model_path or settings.paths.calibration / "latest.json"
     if not path.exists():
         return None
     model = json.loads(path.read_text(encoding="utf-8"))

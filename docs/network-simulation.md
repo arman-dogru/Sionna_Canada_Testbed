@@ -8,6 +8,8 @@ Checked on 2026-10-01. The implementation uses NVIDIA **Sionna RT 2.1.0 + Sionna
 
 The current AODT documentation is **1.5.1**. Its RAN mode combines EM ray tracing with the 5G L1/L2 transmit/receive stack and exposes per-UE BLER, throughput, and PF telemetry. [NVIDIA RAN quickstart](https://docs.nvidia.com/aerial/aodt/ran-simulations).
 
+Its current documented RAN mode is limited to 100 MHz, 273 PRBs and 30 kHz spacing, with specified antenna configurations. Our SYS experiment sweep can compare 20/40 MHz within its stated abstraction. Check the release-specific constraints before migrating the sweep to AODT. [Current RAN limitations](https://docs.nvidia.com/aerial/aodt/limitations).
+
 The worker prerequisites specify Ubuntu 22.04, Docker Compose v2, NVIDIA Container Toolkit, NGC access, and supported GPUs including RTX 6000 Blackwell, GB10, RTX 6000 Ada, L40 and L40S. This machine runs Windows with two RTX 3070s, each with 8 GB VRAM, and has no Docker executable available. It is outside that supported worker setup. A remote worker could support a Windows client later. [Current prerequisites](https://docs.nvidia.com/aerial/aodt/prerequisites), [worker deployment](https://docs.nvidia.com/aerial/aodt/worker-installation).
 
 Older 1.4.1 documentation explicitly specified 48 GB for the backend and 12 GB for the frontend. Those numbers describe the archived release; the current 1.5.1 prerequisites should guide new deployments. [Archived requirements](https://docs.nvidia.com/aerial/aerial-dt/archive/1.4.1/text/installation.html).
@@ -53,6 +55,7 @@ On another host, install the same extras and copy/rebuild the `data/` tree. The 
 | `ray_samples_per_src`, `ray_max_depth` | Direct UE path solver budget. Defaults: 100,000 rays/source and depth four. |
 | `operator` | Optional serving-cell filter. Other operators still contribute interference. |
 | `calibrated` | Apply the source run's fitted per-sector power corrections; fail if unavailable. |
+| `calibration_model_path` | Optional project-relative path to a pinned fit. Requires `calibrated: true`; the model must match the scene/model version. Omit to use compatible `latest.json`. |
 | `duration_s`, `seed`, `device` | Duration, deterministic experiment seed, and SYS compute device. Duration must contain whole slots. |
 | `bandwidth_mhz`, `numerology` | Hypothetical NR carrier width and 15/30 kHz spacing (`0`/`1`). |
 | `data_symbols` | Payload OFDM symbols per slot, after assumed overhead. Default 11. |
@@ -120,6 +123,24 @@ The API exposes:
 - `GET /v1/network/{name}/ues`
 - `GET /v1/network/{name}/csv`
 
+## Radio resource allocation and UE priority
+
+The current simulator uses NVIDIA Sionna SYS `PFSchedulerSUMIMO`. In each downlink slot, only UEs with queued data, a serving cell and a useful achievable rate are eligible. Resource blocks compete within each serving cell. PF balances achievable rate against exponentially averaged delivered service; `pf_beta` controls the history window. Link adaptation selects MCS to target the configured BLER, and PHY abstraction samples transport-block decoding success. Queue service, including partial packets, updates scheduler history.
+
+Video, interactive and sensor names select arrivals, offered rates, packet sizes and buffers. They do **not** assign service-class priority. There are currently no priority weights, 5QI/QFI rules, guaranteed bit rates, packet deadlines, slicing quotas or admission-control policies. PF fairness also does not mean equal throughput or a latency guarantee. Compare Jain fairness within comparable traffic classes when offered demand differs.
+
+AODT in RAN mode includes the 5G L1/L2 stack and MAC scheduling; EM-only mode produces propagation results. Its documented configuration includes PF and round robin, and telemetry records per-UE PRB allocation, MCS, layers and decoding outcomes. Application-specific QoS priority should not be assumed from PF/RR alone. [RAN workflow](https://docs.nvidia.com/aerial/aodt/ran-simulations), [scheduling configuration and telemetry](https://docs.nvidia.com/aerial/aodt/results-schemas).
+
+For our pipeline, scheduling-policy research can extend the SYS adapter with weighted or deadline-aware allocation, then compare throughput, per-class delay, delivery and fairness against the current PF baseline. Those policies are not implemented by the supplied campaign.
+
+## Scheduling multiple simulations
+
+Use `prepare-campaign`, `run-campaign`, and `campaign-status` for dependency-ordered density/condition experiments. The [campaign guide](experiment-campaigns.md) includes foreground/background commands, recovery, result comparisons, the exact October 1 schedule and the 10 km / 1 m coverage run.
+
+Set `calibrated: true` in individual scenario YAMLs. Pin `calibration_model_path` for a controlled comparison, because a later fit can change `latest.json`. The fit must match the source scene and model version. A new scene requires a new fit using the actual mobile-node rows rather than renaming an old calibration.
+
+Network `result.json` now contains a `calibration` record with the fitted model ID/hash, held-out RF errors, training group counts and a support label. `frequency-group-supported` describes broad-group training support; `receiver-offset-extrapolation` marks a group with no usable training baseline. Neither label validates scheduler/traffic parameters or proves every spatial position is calibrated.
+
 ## Verified Ottawa experiments
 
 The verification script reruns real GPU traces and SYS traffic, checks identical-seed repeatability, compares bandwidth/load, and exercises the `legget-6000m` scene:
@@ -129,7 +150,7 @@ The verification script reruns real GPU traces and SYS traffic, checks identical
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Measured here on 2026-10-01, using 24 UEs over 2 seconds, 30 kHz spacing and a 75% downlink slot fraction:
+Measured here on 2026-10-01, using 24 UEs over 2 seconds, 30 kHz spacing and a 75% downlink slot fraction. These initial verification cases were **uncalibrated**; keep them separate from the new mobile-node-calibrated campaign:
 
 | Experiment | Carrier width/cell | Aggregate goodput | Radio/queue P95 | Tail-drop loss | Pending packets |
 | --- | ---: | ---: | ---: | ---: | ---: |

@@ -11,9 +11,12 @@ The simulation CLI uses one project YAML file for geography, tiling, RF behavior
 | `config/demo-4km.yaml` | 4 km | 10 m | 1 km | 1 km | 4 | Larger, lower-resolution demonstration. |
 | `config/demo-4km-5m.yaml` | 4 km | 5 m | 500 m | 1 km | 4 | Current high-resolution multiband demonstration. |
 | `config/demo-6km-2p5m.yaml` | 6 km | 2.5 m | 500 m | 750 m | 4 | Larger, finer-resolution multiband profile used by the Windows run guides. |
+| `config/legget-10km-1m.yaml` | 10 km | 1 m | 500 m | 1 km | 4 | Isolated mobile-node-calibrated campaign; four-transmitter RF batches. |
 | `config/sionna-gui.yaml` | N/A | 5 m | N/A | N/A | 5 | Technical Sionna scene-inspection handoff; not a CLI project config. |
 
 Create a new project profile by copying the nearest YAML and changing `project.model_version`. Do not modify a profile associated with a completed run unless the old file is preserved with that run.
+
+`config/campaign-legget-20261001.yaml` is an experiment schedule rather than a project profile. It selects project files, compatible calibration, UE counts/seeds and RF groups. See [campaign scheduling](experiment-campaigns.md). The 1 m cell size is receiver sampling; the scene builder's terrain mesh remains 10 m.
 
 ## `project`
 
@@ -146,6 +149,7 @@ simulation:
 | --- | --- |
 | `max_depth` | Maximum propagation interaction depth. More depth can capture additional paths and increases runtime. |
 | `samples_per_tx` | Ray/path samples per transmitter in a tile job. Increase only after benchmarking quality and runtime. |
+| `tx_batch_size` | Optional maximum simultaneously traced transmitters in a radio-map call; `0`/omitted traces the whole group. The 10 km profile uses `4`. Batch seeds add the first transmitter index to the deterministic seed; all sector powers are merged before interference is calculated. Changing this numerical setting requires a new run/model version. |
 | `los` | Include direct line-of-sight paths. |
 | `specular_reflection` | Include specular reflections. |
 | `diffuse_reflection` | Include diffuse scattering. It is disabled in supplied profiles because of runtime cost. |

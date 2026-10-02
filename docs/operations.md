@@ -489,3 +489,17 @@ The GUI defaults to **Measurement-calibrated** when a compatible fit exists. Use
 For an uncached stitched map, `format=metadata` returns HTTP 202 with `status: building`, `completed_bands`, and `total_bands`, plus `Retry-After: 2`. Poll the same URL until HTTP 200 supplies the normal image metadata. The GUI handles this automatically. Builds run in the background and duplicate requests share one build; a failed build returns HTTP 500 with its error detail. JSON requests and the rebuild CLI remain synchronous.
 
 These are measurement-fitted power corrections over the saved Sionna propagation. They do not change the physical path-gain map or fill cells where no ray-traced signal exists. Material, antenna-pattern, or geometry fitting requires changing those physical inputs and running Sionna again. A fit is applied only to runs sharing its scientific model version and scene.
+
+## 15. Schedule calibrated UE and larger-area experiments
+
+Use the [calibrated campaign guide](experiment-campaigns.md) for the density/condition matrix, hidden background startup, progress, immutable inputs and resume procedure. The supplied campaign first tests the measured 6 km scene, then builds a separate 10 km square with a 1 m receiver grid, runs 5,600 tile/frequency jobs, refits the original mobile-node data on that new scene, and repeats the UE comparisons.
+
+```powershell
+.\.venv\Scripts\python.exe -m ottawa_rt.cli prepare-campaign
+.\.venv\Scripts\python.exe -m ottawa_rt.cli run-campaign
+.\.venv\Scripts\python.exe -m ottawa_rt.cli campaign-status
+```
+
+If a supervisor is already running, use only the status command. `data/experiments/legget-cal-20261001/status.json` and per-task logs show progress; `comparison.csv` contains completed cases. The new dataset is under `data/campaigns/legget-10km-1m-20261001`, with its own `config/legget-10km-1m.yaml`. Use that configuration for large-run retry, stitching, queries, calibration and serving the GUI.
+
+Resource allocation inside a UE simulation uses Sionna SYS PF. Campaign scheduling determines which simulation runs next. See [radio resource allocation and priority](network-simulation.md#radio-resource-allocation-and-ue-priority) for the policy currently implemented and its QoS limits.

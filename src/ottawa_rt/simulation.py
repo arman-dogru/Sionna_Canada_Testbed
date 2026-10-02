@@ -8,6 +8,7 @@ import traceback
 from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import numpy as np
 
@@ -21,6 +22,12 @@ from ottawa_rt.tiling import Tile, make_tiles
 
 def frequency_bucket_mhz(frequency_mhz: float) -> float:
     return round(frequency_mhz / 5.0) * 5.0
+
+
+def _save_manifest(path: Path, manifest: dict[str, object]) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}-{uuid4().hex}.tmp")
+    temporary.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    FileJobQueue._replace_with_retry(temporary, path)
 
 
 def nearest_supported_frequency_hz(
@@ -247,6 +254,7 @@ def prepare_run(
         "simulation_parameters": {
             "samples_per_tx": int(settings.raw["simulation"]["samples_per_tx"]),
             "max_depth": int(settings.raw["simulation"]["max_depth"]),
+            "tx_batch_size": int(settings.raw["simulation"].get("tx_batch_size", 0)),
             "los": bool(settings.raw["simulation"]["los"]),
             "specular_reflection": bool(settings.raw["simulation"]["specular_reflection"]),
             "diffuse_reflection": bool(settings.raw["simulation"]["diffuse_reflection"]),
@@ -257,7 +265,7 @@ def prepare_run(
         "visualization_schema_version": 1,
         "queue": queue.counts(),
     }
-    (run_dir / "run.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    _save_manifest(run_dir / "run.json", manifest)
     return manifest
 
 
@@ -385,26 +393,42 @@ def execute_job(settings: Settings, job: SimulationJob) -> dict[str, object]:
     surface_data = np.load(surface_path.with_suffix(".npz"), allow_pickle=False)
     rows, columns = int(surface_data["rows"]), int(surface_data["columns"])
     measurement_surface = load_mesh(str(surface_path))
-    radio_map = solver(
-        scene=scene,
-        measurement_surface=measurement_surface,
-        samples_per_tx=int(sim["samples_per_tx"]),
-        max_depth=int(sim["max_depth"]),
-        los=bool(sim["los"]),
-        specular_reflection=bool(sim["specular_reflection"]),
-        diffuse_reflection=bool(sim["diffuse_reflection"]),
-        refraction=bool(sim["refraction"]),
-        diffraction=bool(sim["diffraction"]),
-        edge_diffraction=bool(sim["edge_diffraction"]),
-        seed=int(settings.raw["compute"]["deterministic_seed"]),
-    )
-    path_gain_faces = np.asarray(radio_map.path_gain, dtype=np.float32)
     expected_faces = rows * columns * 2
-    if path_gain_faces.shape[-1] != expected_faces:
-        raise RuntimeError(
-            f"Measurement surface returned {path_gain_faces.shape[-1]} cells; expected {expected_faces}"
+    batch_size = int(sim.get("tx_batch_size", 0)) or len(sectors)
+    if batch_size < 1:
+        raise ValueError("tx_batch_size must be nonnegative")
+    transmitters = [scene.get(name) for name in tx_names]
+    for name in tx_names:
+        scene.remove(name)
+    gains = []
+    for begin in range(0, len(transmitters), batch_size):
+        batch = transmitters[begin : begin + batch_size]
+        for tx in batch:
+            scene.add(tx)
+        radio_map = solver(
+            scene=scene,
+            measurement_surface=measurement_surface,
+            samples_per_tx=int(sim["samples_per_tx"]),
+            max_depth=int(sim["max_depth"]),
+            los=bool(sim["los"]),
+            specular_reflection=bool(sim["specular_reflection"]),
+            diffuse_reflection=bool(sim["diffuse_reflection"]),
+            refraction=bool(sim["refraction"]),
+            diffraction=bool(sim["diffraction"]),
+            edge_diffraction=bool(sim["edge_diffraction"]),
+            seed=int(settings.raw["compute"]["deterministic_seed"]) + begin,
         )
-    path_gain = path_gain_faces.reshape(len(sectors), rows, columns, 2).mean(axis=-1)
+        path_gain_faces = np.asarray(radio_map.path_gain, dtype=np.float32)
+        if path_gain_faces.shape[-1] != expected_faces:
+            raise RuntimeError(
+                f"Measurement surface returned {path_gain_faces.shape[-1]} cells; expected {expected_faces}"
+            )
+        gains.append(path_gain_faces.reshape(len(batch), rows, columns, 2).mean(axis=-1))
+        for tx in batch:
+            scene.remove(tx.name)
+        del radio_map, path_gain_faces
+        dr.sync_thread()
+    path_gain = np.concatenate(gains, axis=0)
     with np.errstate(divide="ignore", invalid="ignore"):
         path_gain_db = 10.0 * np.log10(path_gain)
     receiver_x, receiver_y = np.meshgrid(surface_data["x_m"], surface_data["y_m"])
@@ -528,6 +552,7 @@ def execute_job(settings: Settings, job: SimulationJob) -> dict[str, object]:
         "cuda_visible_devices": os.getenv("CUDA_VISIBLE_DEVICES"),
         "samples_per_tx": int(sim["samples_per_tx"]),
         "max_depth": int(sim["max_depth"]),
+        "tx_batch_size": batch_size,
         "material_frequency_fallbacks": material_frequency_fallbacks,
     }
 
@@ -565,5 +590,5 @@ def worker(
             else "incomplete"
         )
         manifest["updated_at"] = datetime.now(UTC).isoformat()
-        run_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        _save_manifest(run_path, manifest)
     return counts

@@ -45,6 +45,59 @@ def _print(payload: object) -> None:
 ConfigOption = Annotated[Path, typer.Option("--config", "-c", help="Project YAML configuration")]
 
 
+@app.command("prepare-campaign")
+def prepare_campaign_command(
+    campaign: Annotated[Path, typer.Option(help="Experiment campaign YAML")] = Path(
+        "config/campaign-legget-20261001.yaml"
+    ),
+) -> None:
+    """Pin inputs and queue calibrated UE sweeps followed by the 10 km RF run."""
+    from ottawa_rt.campaign import prepare_campaign
+
+    try:
+        directory = prepare_campaign(campaign)
+    except (ValueError, FileNotFoundError, RuntimeError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    _print(json.loads((directory / "status.json").read_text()))
+
+
+@app.command("run-campaign")
+def run_campaign_command(
+    campaign: Annotated[Path, typer.Option(help="Experiment campaign YAML")] = Path(
+        "config/campaign-legget-20261001.yaml"
+    ),
+    max_tasks: Annotated[
+        int | None, typer.Option(min=1, help="Execute a bounded number of stages")
+    ] = None,
+) -> None:
+    """Resume ordered campaign stages; launch RF workers only after existing-data UE sweeps."""
+    from ottawa_rt.campaign import run_campaign
+
+    try:
+        status = run_campaign(campaign, max_tasks=max_tasks)
+    except (ValueError, FileNotFoundError, RuntimeError, subprocess.CalledProcessError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    _print(status)
+
+
+@app.command("campaign-status")
+def campaign_status_command(
+    campaign: Annotated[Path, typer.Option(help="Experiment campaign YAML")] = Path(
+        "config/campaign-legget-20261001.yaml"
+    ),
+) -> None:
+    """Read campaign progress without launching or changing simulations."""
+    import yaml
+
+    from ottawa_rt.campaign import CampaignConfig
+
+    cfg = CampaignConfig.model_validate(yaml.safe_load(campaign.read_text()))
+    directory = campaign.resolve().parent.parent / "data/experiments" / cfg.name
+    _print(json.loads((directory / "status.json").read_text()))
+
+
 @app.command("simulate-network")
 def simulate_network(
     scenario: Annotated[Path, typer.Option(help="UE placement and traffic scenario YAML")] = Path(

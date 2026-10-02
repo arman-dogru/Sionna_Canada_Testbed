@@ -66,4 +66,6 @@ deliverables/
 
 # Local network simulation runtime
 /data/network/
+/data/campaigns/
+/data/experiments/
 

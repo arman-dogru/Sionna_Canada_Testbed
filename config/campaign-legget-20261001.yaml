@@ -1,0 +1,14 @@
+name: legget-cal-20261001
+existing_config: config/demo-6km-2p5m.yaml
+existing_run_id: measurement-validation-6km-2p5m-20260925
+existing_calibration: data/calibration/calibration-20260930T165946Z.json
+large_config: config/legget-10km-1m.yaml
+large_run_id: legget-10km-1m-cal-20261001
+measurement_input_dir: data/measurements
+# Matched mobile-node sector frequencies plus the two NR groups used for research.
+large_rf_frequencies_mhz: [725, 740, 750, 755, 875, 885, 1940, 1980, 2120, 2150, 2630, 2655, 3505, 3605]
+ue_counts: [12, 24, 60, 120]
+seeds: [41, 42]
+duration_s: 5
+primary_frequency_mhz: 3505
+reference_frequency_mhz: 2120
